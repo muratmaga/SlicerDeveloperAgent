@@ -1,8 +1,10 @@
 import os
 import sys
 import logging
+import traceback
 import contextlib
 from io import StringIO
+from datetime import datetime
 
 # The standard Slicer imports
 import slicer
@@ -30,6 +32,24 @@ class SlicerGemini(ScriptedLoadableModule):
 #
 class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
 
+    def __init__(self):
+        ScriptedLoadableModuleLogic.__init__(self)
+        self._outputCallback = None
+
+    def setOutputCallback(self, callback):
+        """Set callback function to receive diagnostic output"""
+        self._outputCallback = callback
+
+    def diagnostic_print(self, message, error=False):
+        """Print diagnostic message to both log and UI"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        formatted_msg = f"[{timestamp}] {'❌ ' if error else ''}" + message
+        print(formatted_msg)  # Console output
+        logging.info(formatted_msg)  # Log file
+        if self._outputCallback:
+            self._outputCallback(formatted_msg)  # UI output
+        slicer.app.processEvents()
+
     def processRequest(self, apiKey, userPrompt, newModuleName=None, targetModuleName=None):
         import google.generativeai as genai
         genai.configure(api_key=apiKey)
@@ -40,42 +60,130 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
             return self.modifyExistingModule(genai, userPrompt, targetModuleName)
         return {"success": False, "error": "No target or new module name specified."}
 
-    def createNewModule(self, genai, userPrompt, newModuleName):
-        boilerplate = self.get_module_boilerplate(newModuleName)
-        prompt_for_creation = (
-            f"Create a complete 3D Slicer module named '{newModuleName}' that implements the following functionality: {userPrompt}. "
-            f"Return ONLY the complete Python code without any explanation or markdown formatting. The code must be valid Python syntax."
-        )
+    def testModuleFunctionality(self, moduleName):
+        """Test basic module functionality and capture any runtime errors"""
+        import traceback  # Ensure traceback is available in this scope
         try:
-            newCode = self.call_gemini(genai, prompt_for_creation, boilerplate, "")
-            if not newCode or newCode.startswith("# Gemini API call failed"):
-                 return {"success": False, "error": "Gemini API call failed. Check model name or API key."}
-
-            settings_dir = os.path.dirname(slicer.app.slicerUserSettingsFilePath)
-            # Create a proper module directory structure
-            moduleTopLevelDir = os.path.join(settings_dir, "qt-scripted-modules", newModuleName)
-            if not os.path.exists(moduleTopLevelDir):
-                os.makedirs(moduleTopLevelDir)
-
-            filePath = os.path.join(moduleTopLevelDir, f"{newModuleName}.py")
-            self.write_code(filePath, newCode)
-
-            # Add module to the Python path if needed
-            if moduleTopLevelDir not in sys.path:
-                sys.path.append(moduleTopLevelDir)
+            self.diagnostic_print(f"Testing module '{moduleName}' functionality...")
             
-            # Ensure the module factory is updated
-            factory = slicer.app.moduleManager().factoryManager()
-            factory.registerModule(qt.QFileInfo(filePath))
-            factory.loadModules([newModuleName])
+            # Get the module's widget representation
+            self.diagnostic_print("  - Getting module widget...")
+            moduleWidget = slicer.util.getModuleWidget(moduleName)
+            if not moduleWidget:
+                raise RuntimeError(f"Could not get widget for module {moduleName}")
             
-            # Select the module to show it
-            slicer.util.selectModule(newModuleName)
+            # Try to access key components that should exist
+            if not hasattr(moduleWidget, 'logic'):
+                raise RuntimeError("Module widget missing 'logic' attribute")
+            
+            # Test the setup method and monitor for runtime errors
+            self.diagnostic_print("  - Running module setup and monitoring for errors...")
+            error_buffer = StringIO()
+            runtime_error = None
 
-            return {"success": True, "message": f"Module '{newModuleName}' created and loaded. It is saved in: {moduleTopLevelDir}"}
+            # Set up error monitoring
+            errorLogModel = slicer.app.errorLogModel()
+            observer = errorLogModel.connect('messageLogged(QString, QString)', 
+                lambda caller, event, msg_type, msg_text: error_buffer.write(f"[{msg_type}] {msg_text}\n") if msg_type in ['ERROR', 'FATAL', 'WARNING'] else None)
+
+            try:
+                # Run setup and wait for potential asynchronous errors
+                moduleWidget.setup()
+                slicer.app.processEvents()
+                qt.QThread.msleep(1000)  # Wait a second for potential async operations
+                slicer.app.processEvents()
+
+                # Check error buffer
+                if error_buffer.getvalue():
+                    runtime_error = f"Runtime errors detected:\n{error_buffer.getvalue()}"
+            finally:
+                # Disconnect the error observer
+                errorLogModel.disconnect(observer)
+
+                # Check for any errors that occurred
+            if runtime_error:
+                raise RuntimeError(runtime_error)
+                
+            self.diagnostic_print("  ✓ Module tests completed successfully")
+            return True, ""
+            
         except Exception as e:
-            logging.error(f"Failed to create new module: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            error_msg = f"Runtime test failed: {str(e)}\n{traceback.format_exc()}"
+            self.diagnostic_print(f"  ❌ {error_msg}", error=True)
+            return False, error_msg
+
+    def createNewModule(self, genai, userPrompt, newModuleName):
+        import traceback  # Ensure traceback is available in this scope
+        boilerplate = self.get_module_boilerplate(newModuleName)
+        settings_dir = os.path.dirname(slicer.app.slicerUserSettingsFilePath)
+        moduleTopLevelDir = os.path.join(settings_dir, "qt-scripted-modules", newModuleName)
+        filePath = os.path.join(moduleTopLevelDir, f"{newModuleName}.py")
+
+        max_debug_attempts = 2
+        current_code = None
+        error_history = ""
+
+        for attempt in range(max_debug_attempts + 1):  # +1 for initial attempt
+            try:
+                if attempt == 0:
+                    prompt_for_creation = (
+                        f"Create a complete 3D Slicer module named '{newModuleName}' that implements the following functionality: {userPrompt}. "
+                        f"Use only modern, non-deprecated Slicer API calls. Return ONLY the complete Python code without any explanation or markdown formatting.")
+                else:
+                    prompt_for_creation = (
+                        f"Debug and fix the 3D Slicer module code. The module should implement: {userPrompt}\n"
+                        f"Use only modern, non-deprecated Slicer API calls. Current error (Debug Attempt {attempt}/{max_debug_attempts}):\n{error_history}")
+
+                newCode = self.call_gemini(genai, prompt_for_creation, current_code or boilerplate, error_history)
+                if not newCode or newCode.startswith("# Gemini API call failed"):
+                    return {"success": False, "error": f"Gemini API call failed on attempt {attempt}. Check model name or API key."}
+
+                # Create directory if it doesn't exist
+                if not os.path.exists(moduleTopLevelDir):
+                    os.makedirs(moduleTopLevelDir)
+
+                # Write the new code
+                self.write_code(filePath, newCode)
+                current_code = newCode
+
+                # Add module to the Python path if needed
+                if moduleTopLevelDir not in sys.path:
+                    sys.path.append(moduleTopLevelDir)
+
+                # Try to load the module
+                self.diagnostic_print(f"Attempt {attempt + 1}: Registering module...")
+                factory = slicer.app.moduleManager().factoryManager()
+                factory.registerModule(qt.QFileInfo(filePath))
+                
+                self.diagnostic_print(f"Attempt {attempt + 1}: Loading module...")
+                factory.loadModules([newModuleName])
+                
+                # Try to select and test the module
+                self.diagnostic_print(f"Attempt {attempt + 1}: Selecting module...")
+                slicer.util.selectModule(newModuleName)
+                
+                # Test the module's runtime functionality
+                test_success, test_error = self.testModuleFunctionality(newModuleName)
+                if not test_success:
+                    raise RuntimeError(f"Module loaded but failed runtime tests: {test_error}")
+                
+                # If we get here without exceptions, module loaded and tested successfully
+                result_message = f"Module '{newModuleName}' created, loaded, and tested successfully"
+                if attempt > 0:
+                    result_message += f" after {attempt} debug attempts"
+                result_message += f". Saved in: {moduleTopLevelDir}"
+                
+                return {"success": True, "message": result_message}
+
+            except Exception as e:
+                error_msg = f"Error on attempt {attempt + 1}:\n{str(e)}\n{traceback.format_exc()}"
+                self.diagnostic_print(f"Module creation/loading failed:\n{error_msg}", error=True)
+                error_history = error_msg
+                
+                if attempt == max_debug_attempts:
+                    return {"success": False, "error": f"Failed to create/load module after {max_debug_attempts} debug attempts. Final error: {str(e)}\n\nError History:\n{error_history}"}
+                
+                # Continue to next attempt
 
     def modifyExistingModule(self, genai, userPrompt, moduleName):
         modulePath = slicer.util.modulePath(moduleName)
@@ -166,6 +274,7 @@ class {moduleName}Logic(ScriptedLoadableModuleLogic):
             return code_context  # Return original template on error
 
     def reload_and_capture(self, module_name):
+        import traceback  # Ensure traceback is available in this scope
         output_buffer = StringIO()
         success = False
         try:
@@ -186,6 +295,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
         self.logic = SlicerGeminiLogic()
+        self.logic.setOutputCallback(self.appendToConversationView)
         self._parameterNode = None
 
     def setup(self):
@@ -199,7 +309,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         setupFormLayout = qt.QFormLayout(setupCollapsibleButton)
         self.apiKeyLineEdit = qt.QLineEdit()
         # --- Hardcoded API Key ---
-        self.apiKeyLineEdit.setText("") # Remember to regenerate this key.
+        self.apiKeyLineEdit.setText("AIzaSyAvltYg84LhCinvvxXk-eMeJg2Zt4Ffu30") # Remember to regenerate this key.
         setupFormLayout.addRow("Gemini API Key:", self.apiKeyLineEdit)
         self.checkForGeminiLibrary()
 
@@ -241,6 +351,13 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.targetModuleSelector.currentIndexChanged.connect(self.onTargetModuleChanged)
 
         self.layout.addStretch(1)
+
+    def appendToConversationView(self, message):
+        """Append a message to the conversation view"""
+        self.conversationView.append(f"<pre>{message}</pre>")
+        self.conversationView.verticalScrollBar().setValue(
+            self.conversationView.verticalScrollBar().maximum)
+        slicer.app.processEvents()
 
     def onNewModuleNameChanged(self, text):
         self.targetModuleSelector.enabled = not bool(text)
