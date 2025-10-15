@@ -53,7 +53,7 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
     def processRequest(self, apiKey, userPrompt, newModuleName=None, targetModuleName=None, scriptName=None, outputPath=None):
         try:
             from openai import OpenAI
-            # Use GitHub Models API endpoint
+            # Use GitHub Models API (included with GitHub Copilot subscription)
             client = OpenAI(
                 api_key=apiKey,
                 base_url="https://models.inference.ai.azure.com"
@@ -140,7 +140,7 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
             moduleTopLevelDir = os.path.join(settings_dir, "qt-scripted-modules", newModuleName)
             filePath = os.path.join(moduleTopLevelDir, f"{newModuleName}.py")
 
-        max_debug_attempts = 2
+        max_debug_attempts = 6
         current_code = None
         error_history = ""
 
@@ -249,7 +249,7 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
         if not os.path.exists(scripts_dir):
             os.makedirs(scripts_dir)
         
-        max_debug_attempts = 2
+        max_debug_attempts = 6
         current_code = None
         error_history = ""
         
@@ -329,12 +329,15 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
                     result_message += f". Saved to: {script_file_path}"
                 
                 # Try to open the script in Script Editor extension
+                self.diagnostic_print("Opening successful script in Script Editor...")
                 script_editor_result = self.openInScriptEditor(script_file_path)
                 if script_editor_result["success"]:
                     result_message += f"\n\n✅ Script opened in Script Editor for editing."
+                    self.diagnostic_print("✅ Script successfully opened in Script Editor")
                 else:
                     result_message += f"\n\n⚠️ Could not open in Script Editor: {script_editor_result['error']}"
                     result_message += f"\n\nTo run this script, you can:\n1. Copy and paste the code into Slicer's Python console\n2. Use exec(open(r'{script_file_path}').read()) in the Python console\n3. Open the file in a text editor to review and modify"
+                    self.diagnostic_print(f"⚠️ Could not open in Script Editor: {script_editor_result['error']}")
                 
                 return {"success": True, "message": result_message}
 
@@ -348,13 +351,18 @@ ATTEMPT {attempt + 1} FAILED:
 Error Type: {type(e).__name__}
 Error Message: {str(e)}
 
-Generated Code (first 1000 chars):
-{new_code[:1000] if 'new_code' in locals() else 'No code generated'}
+Generated Code That Failed:
+{new_code if 'new_code' in locals() else 'No code generated'}
 
-Full Error Details:
+Full Traceback:
 {traceback.format_exc()}
 
-Please fix the above issues and generate corrected code.
+DEBUGGING GUIDANCE:
+- Analyze the error message carefully to understand what went wrong
+- If Python suggests an alternative (e.g., "Did you mean: X?"), use that suggestion
+- Search the Script Repository (https://slicer.readthedocs.io/en/latest/developer_guide/script_repository.html) for working examples of similar functionality
+- If the same error occurs after multiple attempts, try a fundamentally different approach
+- Consider using simpler, higher-level helper functions instead of low-level APIs
 """
                 error_history = formatted_error
                 
@@ -372,18 +380,8 @@ import slicer
 import slicer.util
 import logging
 
-def main():
-    """Main function that implements the script functionality"""
-    try:
-        # Your implementation goes here
-        slicer.util.infoDisplay("Script executed successfully!")
-        
-    except Exception as e:
-        slicer.util.errorDisplay(f"Script execution failed: {{str(e)}}")
-        logging.error(f"{scriptName} execution failed: {{e}}", exc_info=True)
-
-if __name__ == "__main__":
-    main()
+# Your implementation goes here
+print("Script executed successfully!")
 '''
 
     def testScriptExecution(self, script_code, script_name):
@@ -414,115 +412,46 @@ if __name__ == "__main__":
         try:
             self.diagnostic_print(f"Executing '{script_name}' in Slicer Python console...")
             
-            # Capture both stdout and stderr
-            import sys
-            from io import StringIO
+            # Clear the scene before execution to ensure clean state
+            self.diagnostic_print("Clearing scene for clean test execution...")
+            slicer.mrmlScene.Clear(0)
             
-            # Store original stdout/stderr
-            original_stdout = sys.stdout
-            original_stderr = sys.stderr
-            
-            # Create string buffers to capture output
-            captured_output = StringIO()
-            captured_errors = StringIO()
-            
-            # Redirect output
-            sys.stdout = captured_output
-            sys.stderr = captured_errors
-            
-            execution_failed = False
-            execution_error = ""
-            
+            # Execute the script directly and let errors propagate
             try:
-                # Execute the script in Slicer's Python manager
-                python_manager = slicer.app.pythonManager()
-                python_manager.executeString(script_code)
+                # Execute the script as-is - no mocking, let it fail naturally
+                exec(script_code, {'slicer': slicer, 'logging': logging, 'SampleData': __import__('SampleData'), '__name__': '__main__'})
                 
-                # Get the captured output
-                output_text = captured_output.getvalue()
-                error_text = captured_errors.getvalue()
-                
-            except Exception as exec_exception:
-                # Direct execution exception
-                execution_failed = True
-                execution_error = f"Direct execution exception: {str(exec_exception)}"
-                output_text = captured_output.getvalue()
-                error_text = captured_errors.getvalue()
-                
-                # Restore original stdout/stderr
-                sys.stdout = original_stdout
-                sys.stderr = original_stderr
-                
-                # Check for direct execution exceptions first
-                if execution_failed:
-                    self.diagnostic_print(f"Direct execution failed: {execution_error}")
-                    self.diagnostic_print("  ❌ Script execution FAILED in Slicer (direct exception)")
-                    return False, execution_error
-                
-                # Combine all output for analysis
-                full_output = (output_text + "\n" + error_text).strip()
-                
-                # DEBUG: Show what we captured
-                self.diagnostic_print(f"DEBUG - Captured output length: {len(output_text)}")
-                self.diagnostic_print(f"DEBUG - Captured error length: {len(error_text)}")
-                self.diagnostic_print(f"DEBUG - Full output (first 500 chars): {full_output[:500]}")
-                
-                # Check if there were any errors in stderr
-                if error_text.strip():
-                    self.diagnostic_print(f"Script produced stderr errors: {error_text.strip()}")
-                    self.diagnostic_print("  ❌ Script execution FAILED in Slicer (stderr)")
-                    return False, error_text.strip()
-                
-                # Check for ANY occurrence of "failed" or exception patterns - be more aggressive
-                error_indicators = [
-                    'script execution failed',
-                    'execution failed',
-                    'traceback (most recent call last)',
-                    'traceback',
-                    'error:',
-                    'attributeerror',
-                    'typeerror',
-                    'valueerror',
-                    'runtimeerror',
-                    'nameerror',
-                    'keyerror',
-                    'indexerror',
-                    'importerror',
-                    'modulenotfounderror',
-                    'has no attribute',
-                    'no attribute',
-                    'unexpected keyword argument',
-                    'got an unexpected keyword argument',
-                    'download failed',
-                    'load failed',
-                    'no such file',
-                    'failed:',
-                    'exception',
-                    'argument 1:'  # This specific error pattern
-                ]
-                
-                output_lower = full_output.lower()
-                
-                # Look for any error indicators
-                for error_pattern in error_indicators:
-                    if error_pattern in output_lower:
-                        self.diagnostic_print(f"Script execution FAILED - detected error pattern: '{error_pattern}'")
-                        self.diagnostic_print(f"Matching text: {full_output[:1000]}")
-                        self.diagnostic_print("  ❌ Script execution FAILED in Slicer")
-                        return False, f"Error detected: {full_output}"
-                
-                # If we get here, no obvious errors were detected
-                if full_output:
-                    self.diagnostic_print(f"Script output: {full_output[:300]}...")
-                
+                # If we get here, no exception was raised
                 self.diagnostic_print("  ✓ Script executed successfully in Slicer")
                 return True, ""
+                    
+            except Exception as exec_exception:
+                import traceback
+                import sys
+                # Direct execution exception - this is a real runtime error
+                execution_error = str(exec_exception)
+                full_traceback = traceback.format_exc()
                 
-            finally:
-                # Always restore stdout/stderr even if execution fails
-                sys.stdout = original_stdout
-                sys.stderr = original_stderr
+                # Get detailed exception info for better debugging
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                error_details = {
+                    'type': exc_type.__name__ if exc_type else 'Unknown',
+                    'message': str(exc_value) if exc_value else str(exec_exception),
+                    'repr': repr(exc_value) if exc_value else repr(exec_exception)
+                }
                 
+                # Try to get more info about the error
+                enhanced_error = execution_error
+                if hasattr(exc_value, 'args') and exc_value.args:
+                    enhanced_error = f"{execution_error} (args: {exc_value.args})"
+                
+                self.diagnostic_print(f"Script execution FAILED with exception: {enhanced_error}")
+                self.diagnostic_print(f"Exception type: {error_details['type']}, repr: {error_details['repr']}")
+                self.diagnostic_print(f"Full traceback: {full_traceback}")
+                self.diagnostic_print("  ❌ Script execution FAILED in Slicer")
+                
+                return False, f"Script execution failed: {execution_error}\n\nFull traceback:\n{full_traceback}"
+            
         except Exception as e:
             import traceback
             error_msg = f"Failed to execute script in Slicer: {str(e)}"
@@ -764,12 +693,33 @@ class {moduleName}Logic(ScriptedLoadableModuleLogic):
 
     def call_ai(self, client, prompt, code_context, error_history, request_type="module"):
         
+        # DIAGNOSTIC: Log what we're sending to the AI
+        self.diagnostic_print("=" * 80)
+        self.diagnostic_print("AI CALL DIAGNOSTIC")
+        self.diagnostic_print(f"Request Type: {request_type}")
+        self.diagnostic_print(f"Prompt (first 200 chars): {prompt[:200]}...")
+        self.diagnostic_print(f"Code Context Length: {len(code_context)} chars")
+        self.diagnostic_print(f"Error History Length: {len(error_history)} chars")
+        if error_history:
+            self.diagnostic_print(f"Error History (first 500 chars): {error_history[:500]}...")
+        self.diagnostic_print("=" * 80)
+        
         base_prompt = """You are an expert 3D Slicer Python developer. 
         Respond ONLY with complete, working Python code that can be directly saved and executed.
         Do not include explanations, markdown formatting, or code blocks - just raw Python code.
 
         Essential imports: import slicer, slicer.util, logging
         For downloads: import SampleData
+        Note: SampleData.downloadFromURL() returns a LIST of nodes, not a single node
+        Example: volume_node = SampleData.downloadFromURL(url)[0]  # Get first node from list
+        
+        RESOURCES:
+        - Official API documentation: https://slicer.readthedocs.io/\
+        - Script repository: https://slicer.readthedocs.io/en/latest/developer_guide/script_repository.html
+        - When encountering AttributeError, check the exact class/method names in the documentation
+        - VTK methods in Slicer use CapitalCase (e.g., GetID, SetVisibility, CreateNode)
+        - When Python suggests "Did you mean: X?", use X exactly as suggested
+        - For complex tasks, prefer slicer.util helper functions over low-level VTK APIs
         
         Focus on writing clean, working code that follows proper Python and Slicer patterns."""
 
@@ -778,12 +728,14 @@ class {moduleName}Logic(ScriptedLoadableModuleLogic):
 
         SCRIPT REQUIREMENTS:
         - Standalone Python script for Slicer's Python console
-        - Include main() function with core functionality  
-        - Use if __name__ == "__main__": main() pattern
-        - Comprehensive error handling with slicer.util.errorDisplay()
-        - User feedback with slicer.util.infoDisplay() for success
+        - Write code at module level (NO main() function, NO if __name__ == "__main__")
+        - Execute statements directly in sequence for clear line-by-line error reporting
+        - DO NOT use try/except blocks - let errors propagate naturally for debugging
+        - DO NOT use slicer.util.errorDisplay() or slicer.util.infoDisplay() 
+        - Use print() statements for output instead
         - Clear comments explaining each section
         - NO tuple unpacking without certainty about return values
+        - Code should fail loudly if there are errors so they can be fixed
         """
         else:
             system_prompt = base_prompt + """
@@ -811,17 +763,35 @@ Generate working Slicer code that implements the requested functionality. Focus 
 """
 
         try:
+            # Use AI-21 Jamba 1.5 Large or GPT-4o via GitHub Models (excellent for code development)
+            # Note: GitHub Models available models include gpt-4o, gpt-4o-mini, AI21-Jamba-1.5-Large, etc.
+            
+            # DIAGNOSTIC: Log the full user prompt being sent
+            full_user_message = f"""
+## Task: {prompt}
+
+## Error History (if any):
+{error_history}
+
+## Code Template/Context:
+{code_context}
+
+Generate working Slicer code that implements the requested functionality. Focus on correctness and proper API usage.
+"""
+            self.diagnostic_print(f"SENDING TO AI - Full message length: {len(full_user_message)} chars")
+            
             response = client.chat.completions.create(
                 model="gpt-4o",  # GitHub Models supports gpt-4o
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": full_user_message}
                 ],
-                temperature=0.1,  # Lower temperature for more deterministic code
-                max_tokens=4000
+                temperature=0.1,
+                max_tokens=8000
             )
             
             generated_code = response.choices[0].message.content.strip()
+            self.diagnostic_print(f"RECEIVED FROM AI - Code length: {len(generated_code)} chars")
             
             # Clean up the response
             if generated_code.startswith("```python"):
@@ -912,7 +882,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         setupFormLayout = qt.QFormLayout(setupCollapsibleButton)
         self.apiKeyLineEdit = qt.QLineEdit()
         # --- GitHub Token Setup ---
-        self.apiKeyLineEdit.setPlaceholderText("ghp_... (Enter your GitHub Personal Access Token)")
+        self.apiKeyLineEdit.setPlaceholderText("ghp_... or ghu_... (GitHub Personal Access Token)")
         # To get your token: https://github.com/settings/tokens
         setupFormLayout.addRow("GitHub Token:", self.apiKeyLineEdit)
         
@@ -928,9 +898,6 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         outputPathLayout.addWidget(self.outputPathLineEdit)
         outputPathLayout.addWidget(self.browseOutputPathButton)
         setupFormLayout.addRow("Output Directory:", outputPathLayout)
-        
-        self.checkForOpenAILibrary()
-        self.checkForScriptEditor()
 
         # --- Development Assistant ---
         devCollapsibleButton = ctk.ctkCollapsibleButton()
@@ -964,7 +931,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         devFormLayout.addRow(script_editor_info)
         
         # Add GitHub token help
-        github_token_info = qt.QLabel("🔑 GitHub Token: Go to github.com/settings/tokens → Generate new token (classic) → Select 'repo' scope")
+        github_token_info = qt.QLabel("🔑 GitHub Token: Go to github.com/settings/tokens → Generate new token (classic) → Select 'repo' scope → Using GPT-4o via GitHub Models (excellent for coding)")
         github_token_info.setStyleSheet("color: #0366d6; font-size: 10px;")
         github_token_info.setWordWrap(True)
         devFormLayout.addRow(github_token_info)
@@ -988,12 +955,17 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.conversationView = qt.QTextBrowser()
         self.conversationView.setMinimumHeight(300)
         devFormLayout.addRow(self.conversationView)
+        
+        # Check for required libraries and extensions (after conversationView is created)
+        self.checkForOpenAILibrary()
+        self.checkForScriptEditor()
+        
         self.promptTextEdit = qt.QTextEdit()
         # --- Pre-populated Prompt ---
-        self.promptTextEdit.setPlainText("Create functionality that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd\n\nRequirements:\n- Use: import SampleData; volume_node = SampleData.downloadFromURL(url)\n- SampleData.downloadFromURL() returns a volume node directly (no file path needed)\n- Set 3D-only layout with volume rendering\n- Include proper error handling\n- Provide user feedback")
+        self.promptTextEdit.setPlainText("Create functionality that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd\n\nRequirements:\n- Use: import SampleData; loaded_nodes = SampleData.downloadFromURL(url); volume_node = loaded_nodes[0]\n- SampleData.downloadFromURL() returns a LIST of nodes (extract first element)\n- Set 3D-only layout with volume rendering\n- Include proper error handling\n- Provide user feedback")
         self.promptTextEdit.setFixedHeight(100)
         devFormLayout.addRow(self.promptTextEdit)
-        self.sendButton = qt.QPushButton("🚀 Send Prompt to AI (GitHub Models)")
+        self.sendButton = qt.QPushButton("🚀 Send Prompt to AI (GPT-4o via GitHub)")
         devFormLayout.addRow(self.sendButton)
 
         # Connections
@@ -1084,6 +1056,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay(f"Error finding last script: {str(e)}")
 
     def checkForOpenAILibrary(self):
+        """Check if the openai library is installed (needed for GitHub Models API)"""
         try:
             from openai import OpenAI
         except ImportError:
@@ -1107,10 +1080,10 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         msg = qt.QMessageBox()
         msg.setIcon(qt.QMessageBox.Warning)
         msg.setText("OpenAI Library Not Found")
-        msg.setInformativeText("The 'openai' library is required. Would you like to install it now?")
+        msg.setInformativeText("The 'openai' library is required for GitHub Models API. Would you like to install it now?")
         msg.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
         if msg.exec_() == qt.QMessageBox.Ok:
-            self.conversationView.append("<b>Installing 'openai'...</b>")
+            self.conversationView.append("<b>Installing 'openai' library (for GitHub Models API)...</b>")
             slicer.util.pip_install('openai')
             self.conversationView.append("<b>Installation complete.</b>")
 
