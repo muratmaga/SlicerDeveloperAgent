@@ -14,31 +14,176 @@ import qt
 import ctk
 
 #
-# SlicerGemini
+# DeveloperAgent
 #
 
-class SlicerGemini(ScriptedLoadableModule):
+class DeveloperAgent(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = "Slicer Gemini"
+        self.parent.title = "Developer Agent"
         self.parent.categories = ["Developer Tools"]
         self.parent.dependencies = ["ExtensionWizard"] # Add dependency
-        self.parent.contributors = ["Gemini (Google)"]
-        self.parent.helpText = "This module was created by SlicerGemini."
-        self.parent.acknowledgementText = "This module was developed with the assistance of Google's Gemini AI."
+        self.parent.contributors = ["AI Assistant"]
+        self.parent.helpText = "This module was created by DeveloperAgent."
+        self.parent.acknowledgementText = "This module was developed with the assistance of AI."
 
 #
-# SlicerGeminiLogic
+# DeveloperAgentLogic
 #
-class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
+class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
 
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
         self._outputCallback = None
+        # Track last created/updated script for quick opening in Script Editor
+        self.lastScriptNodeID = None
+        self.lastScriptFilePath = None
 
     def setOutputCallback(self, callback):
         """Set callback function to receive diagnostic output"""
         self._outputCallback = callback
+    
+    def setDebugIterations(self, iterations):
+        """Set the number of debug iterations"""
+        self._debugIterations = iterations
+    
+    def getDebugIterations(self):
+        """Get the number of debug iterations"""
+        return getattr(self, '_debugIterations', 2)
+    
+    def setModel(self, model):
+        """Set the AI model to use"""
+        self._model = model
+    
+    def getModel(self):
+        """Get the AI model to use"""
+        return getattr(self, '_model', 'gpt-4o')
+
+    def loadScriptIntoScene(self, script_file_path):
+        """Load a .py file into the MRML scene as a Python script text node using Script Editor conventions.
+        - Reuses Script Editor storage helper if available
+        - Ensures mimetype is set so Subject Hierarchy assigns correct icon/behavior
+        - Avoids duplicate nodes if the script is already in the scene
+        Returns: (node, message) where node is vtkMRMLTextNode or None.
+        """
+        try:
+            if not os.path.exists(script_file_path):
+                return None, f"File does not exist: {script_file_path}"
+
+            # If a node already exists for this file, update and return it
+            existing = slicer.mrmlScene.GetNodesByClass("vtkMRMLTextNode")
+            try:
+                for i in range(existing.GetNumberOfItems()):
+                    n = existing.GetItemAsObject(i)
+                    st = n.GetStorageNode()
+                    if st and st.GetFileName() == script_file_path:
+                        # Ensure correct attributes and refresh content from disk
+                        with open(script_file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        n.SetText(content)
+                        n.SetAttribute("mimetype", "text/x-python")
+                        n.SetAttribute("customTag", "pythonFile")
+                        # Ask SH to re-evaluate plugin (for icon/behavior)
+                        shNode = slicer.mrmlScene.GetSubjectHierarchyNode()
+                        if shNode:
+                            shNode.RequestOwnerPluginSearch(n)
+                        # Persist last script references
+                        self.lastScriptNodeID = n.GetID()
+                        self.lastScriptFilePath = script_file_path
+                        return n, "Updated existing script node"
+            finally:
+                existing.UnRegister(None) if existing is not None else None
+
+            # Read content and create a new text node
+            with open(script_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            text_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextNode')
+            text_node.SetName(os.path.basename(script_file_path))
+            text_node.SetText(content)
+            text_node.SetAttribute("mimetype", "text/x-python")
+            text_node.SetAttribute("customTag", "pythonFile")
+
+            # Configure storage using Script Editor helper if available
+            try:
+                # Helper is defined in ScriptEditor module file
+                from ScriptEditor import _createPythonScriptStorageNode  # type: ignore
+                _createPythonScriptStorageNode(text_node, script_file_path)
+            except Exception as e:
+                # Fallback: create a basic text storage node with .py support
+                storage_node = text_node.GetStorageNode()
+                if not storage_node:
+                    storage_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextStorageNode')
+                storage_node.SetFileName(script_file_path)
+                if hasattr(storage_node, "SetSupportedReadFileExtensions"):
+                    storage_node.SetSupportedReadFileExtensions(["py"])
+                if hasattr(storage_node, "SetSupportedWriteFileExtensions"):
+                    storage_node.SetSupportedWriteFileExtensions(["py"])
+                text_node.SetAndObserveStorageNodeID(storage_node.GetID())
+
+            # Ensure Subject Hierarchy assigns correct plugin/icon
+            shNode = slicer.mrmlScene.GetSubjectHierarchyNode()
+            if shNode:
+                shNode.RequestOwnerPluginSearch(text_node)
+
+            # Persist last script references
+            self.lastScriptNodeID = text_node.GetID()
+            self.lastScriptFilePath = script_file_path
+
+            return text_node, "Created new script node"
+        except Exception as e:
+            return None, f"Failed to load script into scene: {e}"
+
+    def focusScriptInScriptEditor(self, nodeOrId):
+        """Switch to Script Editor and select the provided text node.
+        Retries briefly if the widget is not yet ready."""
+        try:
+            import qt
+            # Resolve node
+            node = None
+            try:
+                if hasattr(slicer, "vtkMRMLNode") and isinstance(nodeOrId, slicer.vtkMRMLNode):
+                    node = nodeOrId
+                else:
+                    node = slicer.mrmlScene.GetNodeByID(nodeOrId)
+            except Exception:
+                node = None
+
+            if not node:
+                slicer.util.warningDisplay("Could not find the generated script node to open in Script Editor.")
+                return False
+
+            # Switch module
+            slicer.util.selectModule('ScriptEditor')
+
+            attempts = {"count": 0}
+            max_attempts = 30  # ~3s with 100ms interval
+
+            def trySetNode():
+                attempts["count"] += 1
+                try:
+                    w = slicer.modules.scripteditor.widgetRepresentation()
+                    if not w:
+                        raise RuntimeError("ScriptEditor widget not ready")
+                    pyw = w.self() if hasattr(w, 'self') else w
+                    if hasattr(pyw, 'setCurrentNode'):
+                        pyw.setCurrentNode(node)
+                        return  # success
+                    # Fallback to combobox if accessible
+                    combo = slicer.util.findChild(w, 'nodeComboBox')
+                    if combo:
+                        combo.setCurrentNode(node)
+                        return  # success
+                    raise RuntimeError("No setter for current node yet")
+                except Exception:
+                    if attempts["count"] < max_attempts:
+                        qt.QTimer.singleShot(100, trySetNode)
+                    else:
+                        slicer.util.warningDisplay("Opened Script Editor, but couldn’t auto-select the script. Please choose it from the dropdown.")
+            qt.QTimer.singleShot(0, trySetNode)
+            return True
+        except Exception:
+            return False
 
     def diagnostic_print(self, message, error=False):
         """Print diagnostic message to both log and UI"""
@@ -140,7 +285,7 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
             moduleTopLevelDir = os.path.join(settings_dir, "qt-scripted-modules", newModuleName)
             filePath = os.path.join(moduleTopLevelDir, f"{newModuleName}.py")
 
-        max_debug_attempts = 6
+        max_debug_attempts = self.getDebugIterations()
         current_code = None
         error_history = ""
 
@@ -156,8 +301,8 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
                         f"Use only modern, non-deprecated Slicer API calls. Current error (Debug Attempt {attempt}/{max_debug_attempts}):\n{error_history}")
 
                 newCode = self.call_ai(client, prompt_for_creation, current_code or boilerplate, error_history, "module")
-                if not newCode or newCode.startswith("# Gemini API call failed"):
-                    return {"success": False, "error": f"Gemini API call failed on attempt {attempt}. Check model name or API key."}
+                if newCode is None:
+                    return {"success": False, "error": "AI API call failed. Check the conversation log for details. This may be due to rate limits, invalid API key, or network issues."}
 
                 # Create directory if it doesn't exist
                 if not os.path.exists(moduleTopLevelDir):
@@ -215,12 +360,11 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
         initialCode = self.read_code(modulePath)
         currentCode = initialCode
         errorHistory = ""
-        maxAttempts = 3
+        maxAttempts = self.getDebugIterations()
         for attempt in range(maxAttempts):
             newCode = self.call_ai(client, userPrompt, currentCode, errorHistory, "module")
-            if not newCode or newCode.startswith("# Gemini API call failed"):
-                errorHistory += f"\nGemini API call failed on attempt {attempt+1}."
-                continue
+            if newCode is None:
+                return {"success": False, "error": "AI API call failed. Check the conversation log for details. This may be due to rate limits, invalid API key, or network issues."}
             self.write_code(modulePath, newCode)
             reloadResult = self.reload_and_capture(moduleName)
             if reloadResult["success"]:
@@ -242,14 +386,14 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
         else:
             # Fallback to default directory
             settings_dir = os.path.dirname(slicer.app.slicerUserSettingsFilePath)
-            scripts_dir = os.path.join(settings_dir, "SlicerGemini-Scripts")
+            scripts_dir = os.path.join(settings_dir, "DeveloperAgent-Scripts")
             script_file_path = os.path.join(scripts_dir, f"{scriptName}.py")
         
         # Create scripts directory if it doesn't exist
         if not os.path.exists(scripts_dir):
             os.makedirs(scripts_dir)
         
-        max_debug_attempts = 6
+        max_debug_attempts = self.getDebugIterations()
         current_code = None
         error_history = ""
         
@@ -270,8 +414,8 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
                 script_template = self.get_script_template(scriptName)
                 new_code = self.call_ai(client, prompt_for_creation, current_code or script_template, error_history, "script")
                 
-                if not new_code or new_code.startswith("# Gemini API call failed"):
-                    return {"success": False, "error": f"Gemini API call failed on attempt {attempt}. Check model name or API key."}
+                if new_code is None:
+                    return {"success": False, "error": "AI API call failed. Check the conversation log for details. This may be due to rate limits, invalid API key, or network issues."}
 
                 # Write the script to file
                 self.write_code(script_file_path, new_code)
@@ -280,6 +424,10 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
                 # Verify the file was written correctly
                 if not os.path.exists(script_file_path):
                     raise RuntimeError(f"Failed to create script file at: {script_file_path}")
+                
+                # Load the script file as a text node after verifying file exists
+                # Only create text node after ALL attempts are done (success or failure)
+                # Don't create it here on every attempt - it will cause duplicates
                 
                 # Verify file content
                 try:
@@ -328,17 +476,17 @@ class SlicerGeminiLogic(ScriptedLoadableModuleLogic):
                 else:
                     result_message += f". Saved to: {script_file_path}"
                 
-                # Try to open the script in Script Editor extension
-                self.diagnostic_print("Opening successful script in Script Editor...")
-                script_editor_result = self.openInScriptEditor(script_file_path)
-                if script_editor_result["success"]:
-                    result_message += f"\n\n✅ Script opened in Script Editor for editing."
-                    self.diagnostic_print("✅ Script successfully opened in Script Editor")
+                # Load script as text node on success (no UI switch)
+                node, load_msg = self.loadScriptIntoScene(script_file_path)
+                if node:
+                    self.diagnostic_print(f"Script loaded as text node: {node.GetName()} ({load_msg})")
+                    # Remember for quick open
+                    self.lastScriptNodeID = node.GetID()
+                    self.lastScriptFilePath = script_file_path
                 else:
-                    result_message += f"\n\n⚠️ Could not open in Script Editor: {script_editor_result['error']}"
-                    result_message += f"\n\nTo run this script, you can:\n1. Copy and paste the code into Slicer's Python console\n2. Use exec(open(r'{script_file_path}').read()) in the Python console\n3. Open the file in a text editor to review and modify"
-                    self.diagnostic_print(f"⚠️ Could not open in Script Editor: {script_editor_result['error']}")
+                    self.diagnostic_print(f"Could not load script as text node: {load_msg}")
                 
+                # Script created and tested successfully
                 return {"success": True, "message": result_message}
 
             except Exception as e:
@@ -367,12 +515,23 @@ DEBUGGING GUIDANCE:
                 error_history = formatted_error
                 
                 if attempt == max_debug_attempts:
+                    # Last attempt failed - still try to create text node for manual fixing
+                    if os.path.exists(script_file_path):
+                        node, load_msg = self.loadScriptIntoScene(script_file_path)
+                        if node:
+                            self.diagnostic_print(f"Script loaded as text node for manual review: {node.GetName()} ({load_msg})")
+                            # Remember for quick open
+                            self.lastScriptNodeID = node.GetID()
+                            self.lastScriptFilePath = script_file_path
+                        else:
+                            self.diagnostic_print(f"Could not load script as text node: {load_msg}")
+                    
                     return {"success": False, "error": f"Failed to create script after {max_debug_attempts} debug attempts. Final error: {str(e)}\n\nError History:\n{error_history}"}
 
     def get_script_template(self, scriptName):
         """Get a basic template for a Slicer Python script"""
         return f'''"""
-{scriptName} - Generated by SlicerGemini
+{scriptName} - Generated by DeveloperAgent
 This script implements custom functionality for 3D Slicer
 """
 
@@ -465,7 +624,7 @@ print("Script executed successfully!")
             return False, f"{error_msg}\n{full_traceback}"
 
     def openInScriptEditor(self, script_file_path):
-        """Try to open the script file in the Script Editor extension"""
+        """Try to open the script file in the Script Editor extension using its file reader"""
         try:
             # First, verify the file exists and is readable
             if not os.path.exists(script_file_path):
@@ -475,124 +634,46 @@ print("Script executed successfully!")
             if not hasattr(slicer.modules, 'scripteditor'):
                 return {"success": False, "error": "Script Editor extension is not installed or available"}
             
-            # Read the file content first
+            self.diagnostic_print(f"Loading script file using Script Editor's file reader: {script_file_path}")
+            
             try:
-                with open(script_file_path, 'r', encoding='utf-8') as f:
-                    file_content = f.read()
-                self.diagnostic_print(f"File content length: {len(file_content)} characters")
-            except Exception as e:
-                return {"success": False, "error": f"Cannot read script file: {str(e)}"}
-            
-            # Try to switch to Script Editor module
-            self.diagnostic_print("Switching to Script Editor extension...")
-            slicer.util.selectModule('ScriptEditor')
-            
-            # Wait a moment for the module to load
-            slicer.app.processEvents()
-            qt.QThread.msleep(2000)  # Wait for Monaco editor to load
-            
-            # Get the Script Editor widget
-            script_editor_widget = slicer.modules.scripteditor.widgetRepresentation()
-            if not script_editor_widget:
-                return {"success": False, "error": "Could not access Script Editor widget"}
-            
-            self.diagnostic_print(f"Opening script file: {script_file_path}")
-            
-            # Get the actual widget implementation
-            widget_self = script_editor_widget.self() if hasattr(script_editor_widget, 'self') else script_editor_widget
-            
-            # Method 1: Create a new text node and load the script content
-            # This is the proper way to work with ScriptEditor
-            try:
-                self.diagnostic_print("Creating new Python text node...")
+                # Use slicer.util.loadText which will use Script Editor's custom file reader
+                # This handles all the proper node configuration automatically
+                success = slicer.util.loadText(script_file_path)
                 
-                # Create a new text node for the script
-                script_name = os.path.splitext(os.path.basename(script_file_path))[0]
-                text_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextNode')
-                text_node.SetName(f"{script_name}_script")
-                text_node.SetAttribute("mimetype", "text/x-python")
-                text_node.SetAttribute("customTag", "pythonFile")
-                text_node.SetText(file_content)
-                
-                # Set up storage node for saving
-                storage_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextStorageNode')
-                storage_node.SetFileName(script_file_path)
-                text_node.SetAndObserveStorageNodeID(storage_node.GetID())
-                
-                self.diagnostic_print(f"Created text node: {text_node.GetName()}")
-                
-                # Set this as the current node in the Script Editor
-                if hasattr(widget_self, 'setCurrentNode'):
-                    widget_self.setCurrentNode(text_node)
-                    self.diagnostic_print("✓ Set text node as current in Script Editor")
-                elif hasattr(widget_self, 'nodeComboBox'):
-                    widget_self.nodeComboBox.setCurrentNode(text_node)
-                    self.diagnostic_print("✓ Set text node in nodeComboBox")
-                
-                # Wait for the editor to update
-                slicer.app.processEvents()
-                qt.QThread.msleep(1000)
-                
-                return {"success": True, "message": f"Script opened in Script Editor as node '{text_node.GetName()}'"}
-                
-            except Exception as e:
-                self.diagnostic_print(f"Text node approach failed: {e}")
-            
-            # Method 2: Try to use Monaco editor JavaScript directly
-            try:
-                self.diagnostic_print("Attempting direct Monaco editor approach...")
-                
-                if hasattr(widget_self, 'editorView') and widget_self.editorView:
-                    editor_view = widget_self.editorView
+                if success:
+                    self.diagnostic_print("✓ Script loaded successfully using Script Editor's file reader")
                     
-                    # Escape the content for JavaScript
-                    escaped_content = file_content.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
+                    # Find and select the loaded node in Script Editor
+                    slicer.util.selectModule('ScriptEditor')
+                    slicer.app.processEvents()
                     
-                    # Use JavaScript to set the editor content
-                    js_code = f"if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue(`{escaped_content}`); }}"
+                    # Find the node that was just loaded
+                    loadedNodes = slicer.mrmlScene.GetNodesByClass("vtkMRMLTextNode")
+                    for i in range(loadedNodes.GetNumberOfItems()):
+                        node = loadedNodes.GetItemAsObject(i)
+                        if node.GetAttribute("mimetype") == "text/x-python":
+                            storageNode = node.GetStorageNode()
+                            if storageNode and storageNode.GetFileName() == script_file_path:
+                                # Get Script Editor widget and set current node
+                                script_editor_widget = slicer.modules.scripteditor.widgetRepresentation()
+                                if script_editor_widget:
+                                    widget_self = script_editor_widget.self() if hasattr(script_editor_widget, 'self') else script_editor_widget
+                                    if hasattr(widget_self, 'setCurrentNode'):
+                                        widget_self.setCurrentNode(node)
+                                    elif hasattr(widget_self, 'nodeComboBox'):
+                                        widget_self.nodeComboBox.setCurrentNode(node)
+                                    self.diagnostic_print(f"✓ Selected loaded script in Script Editor: {node.GetName()}")
+                                break
                     
-                    self.diagnostic_print("Setting content via JavaScript...")
-                    editor_view.evalJS(js_code)
-                    
-                    # Enable the editor and buttons
-                    editor_view.setEnabled(True)
-                    if hasattr(widget_self, 'saveButton'):
-                        widget_self.saveButton.setEnabled(True)
-                    if hasattr(widget_self, 'copyButton'):
-                        widget_self.copyButton.setEnabled(True)
-                    
-                    self.diagnostic_print("✓ Successfully set content using Monaco editor JavaScript")
-                    return {"success": True, "message": "Script content loaded in Script Editor"}
+                    loadedNodes.UnRegister(None)
+                    return {"success": True, "message": f"Script loaded and opened in Script Editor"}
+                else:
+                    return {"success": False, "error": "Script Editor file reader failed to load the file"}
                     
             except Exception as e:
-                self.diagnostic_print(f"Monaco editor JavaScript approach failed: {e}")
-            
-            # Method 3: Try the file loader approach
-            try:
-                self.diagnostic_print("Attempting file loader approach...")
-                
-                # Use the ScriptEditor's file reader
-                file_reader = None
-                try:
-                    from ScriptEditor import ScriptEditorFileReader
-                    file_reader = ScriptEditorFileReader(None)
-                    
-                    properties = {'fileName': script_file_path}
-                    if file_reader.load(properties):
-                        self.diagnostic_print("✓ Successfully loaded using ScriptEditorFileReader")
-                        return {"success": True, "message": "Script loaded using file reader"}
-                        
-                except ImportError:
-                    self.diagnostic_print("ScriptEditorFileReader not available for direct import")
-                
-            except Exception as e:
-                self.diagnostic_print(f"File loader approach failed: {e}")
-            
-            # If all methods fail, at least tell the user where the file is
-            self.diagnostic_print(f"Could not automatically load file. File saved at: {script_file_path}")
-            self.diagnostic_print("You can manually create a new Python text node and copy the content from the file.")
-            
-            return {"success": False, "error": f"Could not automatically load file in Script Editor. File saved at: {script_file_path}"}
+                self.diagnostic_print(f"Failed to load using slicer.util.loadText: {e}")
+                return {"success": False, "error": f"Failed to load script: {str(e)}"}
             
         except Exception as e:
             error_msg = f"Failed to open script in Script Editor: {str(e)}"
@@ -665,8 +746,8 @@ class {moduleName}(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "{moduleName}"
         self.parent.categories = ["Examples"]
-        self.parent.contributors = ["SlicerGemini (AI)"]
-        self.parent.helpText = "This module was created by SlicerGemini."
+        self.parent.contributors = ["DeveloperAgent (AI)"]
+        self.parent.helpText = "This module was created by DeveloperAgent."
 
 class {moduleName}Widget(ScriptedLoadableModuleWidget):
     def setup(self):
@@ -714,8 +795,9 @@ class {moduleName}Logic(ScriptedLoadableModuleLogic):
         Example: volume_node = SampleData.downloadFromURL(url)[0]  # Get first node from list
         
         RESOURCES:
-        - Official API documentation: https://slicer.readthedocs.io/\
+        - Official API documentation: https://slicer.readthedocs.io/en/latest/developer_guide/api.html
         - Script repository: https://slicer.readthedocs.io/en/latest/developer_guide/script_repository.html
+        - Official Slicer source code repository https://github.com/Slicer/Slicer
         - When encountering AttributeError, check the exact class/method names in the documentation
         - VTK methods in Slicer use CapitalCase (e.g., GetID, SetVisibility, CreateNode)
         - When Python suggests "Did you mean: X?", use X exactly as suggested
@@ -780,8 +862,12 @@ Generate working Slicer code that implements the requested functionality. Focus 
 """
             self.diagnostic_print(f"SENDING TO AI - Full message length: {len(full_user_message)} chars")
             
+            # Get the model from settings
+            model_name = self.getModel()
+            self.diagnostic_print(f"Using AI model: {model_name}")
+            
             response = client.chat.completions.create(
-                model="gpt-4o",  # GitHub Models supports gpt-4o
+                model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": full_user_message}
@@ -824,9 +910,40 @@ Generate working Slicer code that implements the requested functionality. Focus 
             return final_code
             
         except Exception as e:
-            logging.error(f"OpenAI API call failed: {e}", exc_info=True)
-            self.diagnostic_print(f"AI API call failed: {str(e)}", error=True)
-            return code_context  # Return original template on error
+            import traceback
+            error_msg = str(e)
+            
+            # Check for rate limit errors
+            if "RateLimitError" in str(type(e).__name__) or "429" in error_msg or "rate limit" in error_msg.lower():
+                # Extract wait time if available
+                wait_time = "unknown"
+                if "wait" in error_msg.lower():
+                    import re
+                    wait_match = re.search(r'wait (\d+) seconds', error_msg)
+                    if wait_match:
+                        seconds = int(wait_match.group(1))
+                        hours = seconds // 3600
+                        minutes = (seconds % 3600) // 60
+                        wait_time = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
+                
+                self.diagnostic_print("❌ RATE LIMIT ERROR DETECTED", error=True)
+                self.diagnostic_print(f"You have exceeded your API quota. Wait time: {wait_time}", error=True)
+                self.diagnostic_print(f"Full error: {error_msg}", error=True)
+                return None  # Return None to signal failure
+            
+            # Check for authentication errors
+            elif "401" in error_msg or "authentication" in error_msg.lower() or "invalid" in error_msg.lower():
+                self.diagnostic_print("❌ AUTHENTICATION ERROR", error=True)
+                self.diagnostic_print("Your GitHub token may be invalid or expired.", error=True)
+                self.diagnostic_print(f"Full error: {error_msg}", error=True)
+                return None
+            
+            # Other API errors
+            else:
+                logging.error(f"OpenAI API call failed: {e}", exc_info=True)
+                self.diagnostic_print(f"❌ AI API call failed: {error_msg}", error=True)
+                self.diagnostic_print(f"Traceback: {traceback.format_exc()}", error=True)
+                return None  # Return None instead of template
 
     def validateSlicerCode(self, code):
         """Validate generated code against known Slicer API patterns and common mistakes"""
@@ -861,13 +978,13 @@ Generate working Slicer code that implements the requested functionality. Focus 
         return {"success": success, "error": output_buffer.getvalue()}
 
 #
-# SlicerGeminiWidget
+# DeveloperAgentWidget
 #
-class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
-        self.logic = SlicerGeminiLogic()
+        self.logic = DeveloperAgentLogic()
         self.logic.setOutputCallback(self.appendToConversationView)
         self._parameterNode = None
 
@@ -886,13 +1003,34 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # To get your token: https://github.com/settings/tokens
         setupFormLayout.addRow("GitHub Token:", self.apiKeyLineEdit)
         
+        # --- Debug Iterations Configuration ---
+        self.debugIterationsSpinBox = qt.QSpinBox()
+        self.debugIterationsSpinBox.setMinimum(1)
+        self.debugIterationsSpinBox.setMaximum(10)
+        self.debugIterationsSpinBox.setValue(2)
+        self.debugIterationsSpinBox.setToolTip("Number of debug attempts when code generation fails (default: 2)")
+        setupFormLayout.addRow("Debug Iterations:", self.debugIterationsSpinBox)
+        
+        # --- Model Selection ---
+        self.modelSelector = qt.QComboBox()
+        self.modelSelector.addItem("GPT-4o (Recommended)", "gpt-4o")
+        self.modelSelector.addItem("GPT-4o Mini (Faster, Lower Quota)", "gpt-4o-mini")
+        self.modelSelector.addItem("GPT-4 Turbo", "gpt-4-turbo")
+        self.modelSelector.addItem("AI21 Jamba 1.5 Large", "AI21-Jamba-1.5-Large")
+        self.modelSelector.addItem("AI21 Jamba 1.5 Mini", "AI21-Jamba-1.5-Mini")
+        self.modelSelector.setCurrentIndex(0)  # Default to GPT-4o
+        self.modelSelector.setToolTip("Select the AI model to use for code generation. Different models have different rate limits and capabilities.")
+        setupFormLayout.addRow("AI Model:", self.modelSelector)
+        
         # --- Output Path Configuration ---
         outputPathLayout = qt.QHBoxLayout()
         self.outputPathLineEdit = qt.QLineEdit()
-        self.outputPathLineEdit.setPlaceholderText("Select output directory for generated code...")
-        # Set default to Desktop
-        desktop_path = os.path.join(os.path.expanduser("~"), "Desktop", "SlicerGemini-Output")
-        self.outputPathLineEdit.setText(desktop_path)
+        self.outputPathLineEdit.setPlaceholderText("Click Browse to select output directory...")
+        # Restore saved output path from settings
+        settings = qt.QSettings()
+        saved_path = settings.value("DeveloperAgent/outputPath", "")
+        if saved_path:
+            self.outputPathLineEdit.setText(saved_path)
         self.browseOutputPathButton = qt.QPushButton("Browse...")
         self.browseOutputPathButton.clicked.connect(self.onBrowseOutputPath)
         outputPathLayout.addWidget(self.outputPathLineEdit)
@@ -936,18 +1074,14 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         github_token_info.setWordWrap(True)
         devFormLayout.addRow(github_token_info)
         
-        # Debug buttons
+        # Script Editor quick-open button
         debug_layout = qt.QHBoxLayout()
-        self.debugScriptEditorButton = qt.QPushButton("🔍 Debug Script Editor")
-        self.debugScriptEditorButton.clicked.connect(self.onDebugScriptEditor)
-        self.debugScriptEditorButton.setStyleSheet("background-color: #f0f0f0; font-size: 10px;")
-        
-        self.showLastScriptButton = qt.QPushButton("📄 Show Last Generated Script")
-        self.showLastScriptButton.clicked.connect(self.onShowLastScript)
-        self.showLastScriptButton.setStyleSheet("background-color: #e8f4fd; font-size: 10px;")
-        
-        debug_layout.addWidget(self.debugScriptEditorButton)
-        debug_layout.addWidget(self.showLastScriptButton)
+        # New: Open the most recent generated script in Script Editor and auto-select it
+        self.openInScriptEditorButton = qt.QPushButton("Open in Script Editor")
+        self.openInScriptEditorButton.setToolTip("Switch to Script Editor and display the last generated script")
+        self.openInScriptEditorButton.clicked.connect(self.onOpenInScriptEditorClicked)
+
+        debug_layout.addWidget(self.openInScriptEditorButton)
         devFormLayout.addRow(debug_layout)
 
         # --- Conversation UI ---
@@ -962,7 +1096,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         
         self.promptTextEdit = qt.QTextEdit()
         # --- Pre-populated Prompt ---
-        self.promptTextEdit.setPlainText("Create functionality that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd\n\nRequirements:\n- Use: import SampleData; loaded_nodes = SampleData.downloadFromURL(url); volume_node = loaded_nodes[0]\n- SampleData.downloadFromURL() returns a LIST of nodes (extract first element)\n- Set 3D-only layout with volume rendering\n- Include proper error handling\n- Provide user feedback")
+        self.promptTextEdit.setPlainText("Create a script that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd")
         self.promptTextEdit.setFixedHeight(100)
         devFormLayout.addRow(self.promptTextEdit)
         self.sendButton = qt.QPushButton("🚀 Send Prompt to AI (GPT-4o via GitHub)")
@@ -1006,54 +1140,44 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if dialog.exec_():
             selected_dir = dialog.selectedFiles()[0]
             self.outputPathLineEdit.setText(selected_dir)
+            # Save the selected path to settings
+            settings = qt.QSettings()
+            settings.setValue("DeveloperAgent/outputPath", selected_dir)
 
     def onDebugScriptEditor(self):
         """Debug Script Editor widget structure"""
         self.logic.debugScriptEditor()
     
-    def onShowLastScript(self):
-        """Show the last generated script file location and content"""
+    def onOpenInScriptEditorClicked(self):
+        """Open the last generated script in Script Editor and auto-select its node."""
         try:
-            outputPath = self.outputPathLineEdit.text.strip()
-            if not outputPath:
-                slicer.util.warningDisplay("No output path specified")
+            # Prefer the exact last node created/updated
+            nodeId = getattr(self.logic, 'lastScriptNodeID', None)
+            filePath = getattr(self.logic, 'lastScriptFilePath', None)
+
+            if nodeId:
+                self.logic.focusScriptInScriptEditor(nodeId)
                 return
-                
-            scripts_dir = os.path.join(outputPath, "Scripts")
-            if not os.path.exists(scripts_dir):
-                slicer.util.infoDisplay(f"No scripts directory found at: {scripts_dir}")
+
+            # If we only know the file path, ensure it is in the scene and focus it
+            if filePath and os.path.exists(filePath):
+                node, _ = self.logic.loadScriptIntoScene(filePath)
+                if node:
+                    self.logic.lastScriptNodeID = node.GetID()
+                    self.logic.lastScriptFilePath = filePath
+                    self.logic.focusScriptInScriptEditor(node)
+                    return
+
+            # Fallback: choose any Python text node if available
+            pyNodes = [n for n in slicer.util.getNodesByClass('vtkMRMLTextNode') if n.GetAttribute('mimetype') == 'text/x-python']
+            if pyNodes:
+                self.logic.focusScriptInScriptEditor(pyNodes[0])
                 return
-            
-            # Find the most recent script file
-            script_files = []
-            for file in os.listdir(scripts_dir):
-                if file.endswith('.py'):
-                    full_path = os.path.join(scripts_dir, file)
-                    script_files.append((full_path, os.path.getmtime(full_path)))
-            
-            if not script_files:
-                slicer.util.infoDisplay(f"No Python script files found in: {scripts_dir}")
-                return
-            
-            # Sort by modification time and get the most recent
-            script_files.sort(key=lambda x: x[1], reverse=True)
-            most_recent_script = script_files[0][0]
-            
-            # Read and display the content
-            try:
-                with open(most_recent_script, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                self.conversationView.append(f"<h3>📄 Last Generated Script</h3>")
-                self.conversationView.append(f"<b>File:</b> {most_recent_script}<br>")
-                self.conversationView.append(f"<b>Size:</b> {len(content)} characters<br>")
-                self.conversationView.append(f"<b>Content:</b><br><pre style='background-color: #f5f5f5; padding: 10px; border-radius: 5px; max-height: 400px; overflow-y: auto;'>{content[:2000]}{'...' if len(content) > 2000 else ''}</pre><hr>")
-                
-            except Exception as e:
-                slicer.util.errorDisplay(f"Cannot read script file: {str(e)}")
-                
+
+            slicer.util.warningDisplay("No generated script available to open. Please create a script first.")
         except Exception as e:
-            slicer.util.errorDisplay(f"Error finding last script: {str(e)}")
+            slicer.util.warningDisplay(f"Could not open Script Editor: {e}")
+
 
     def checkForOpenAILibrary(self):
         """Check if the openai library is installed (needed for GitHub Models API)"""
@@ -1063,17 +1187,77 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.showInstallMessage()
 
     def checkForScriptEditor(self):
-        """Check if Script Editor extension is available"""
+        """Check if Script Editor extension is available and offer to install"""
         if not hasattr(slicer.modules, 'scripteditor'):
+            msg = qt.QMessageBox()
+            msg.setIcon(qt.QMessageBox.Information)
+            msg.setText("Script Editor Extension Required")
+            msg.setInformativeText(
+                "The Script Editor extension is required for the best experience with DeveloperAgent.\n\n"
+                "This extension provides:\n"
+                "• Syntax highlighting for Python code\n"
+                "• Easy script editing and execution\n"
+                "• Better integration with generated scripts\n\n"
+                "Would you like to install it now?"
+            )
+            msg.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.No)
+            msg.setDefaultButton(qt.QMessageBox.Yes)
+            
+            if msg.exec_() == qt.QMessageBox.Yes:
+                self.installScriptEditor()
+    
+    def installScriptEditor(self):
+        """Install the Script Editor extension"""
+        try:
+            self.conversationView.append("<b>� Installing Script Editor extension...</b>")
+            slicer.app.processEvents()
+            
+            # Get the extensions manager
+            extensionsManager = slicer.app.extensionsManagerModel()
+            if not extensionsManager:
+                self.conversationView.append(
+                    "<span style='color: red;'>❌ Could not access Extensions Manager. "
+                    "Please install Script Editor manually from Extensions Manager.</span>"
+                )
+                return
+            
+            # Try to install the extension
+            extensionName = "ScriptEditor"
+            
+            # Check if already installed but not loaded
+            if extensionsManager.isExtensionInstalled(extensionName):
+                self.conversationView.append(
+                    "<span style='color: orange;'>⚠️ Script Editor is already installed but may need a restart. "
+                    "Please restart 3D Slicer to use the extension.</span>"
+                )
+                return
+            
+            # Install the extension
+            self.conversationView.append(f"<i>Searching for {extensionName} extension...</i>")
+            slicer.app.processEvents()
+            
+            # Schedule the download
+            success = extensionsManager.downloadAndInstallExtensionByName(extensionName)
+            
+            if success:
+                self.conversationView.append(
+                    "<span style='color: green;'>✅ Script Editor extension installed successfully!</span><br>"
+                    "<b>⚠️ Please restart 3D Slicer to use the extension.</b>"
+                )
+            else:
+                self.conversationView.append(
+                    "<span style='color: red;'>❌ Automatic installation failed. "
+                    "Please install Script Editor manually:<br>"
+                    "1. Go to Extensions Manager (View → Extension Manager)<br>"
+                    "2. Click 'Install Extensions'<br>"
+                    "3. Search for 'Script Editor'<br>"
+                    "4. Click Install</span>"
+                )
+                
+        except Exception as e:
             self.conversationView.append(
-                "<div style='background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 5px 0; border-radius: 5px;'>"
-                "<b>📝 Script Editor Extension</b><br>"
-                "For the best script editing experience, consider installing the Script Editor extension:<br>"
-                "• Go to Extensions Manager → Install Extensions<br>"
-                "• Search for 'Script Editor' by SlicerMorph<br>"
-                "• Or visit: <a href='https://github.com/SlicerMorph/SlicerScriptEditor'>https://github.com/SlicerMorph/SlicerScriptEditor</a><br>"
-                "Generated scripts will automatically open in Script Editor when available."
-                "</div>"
+                f"<span style='color: red;'>❌ Error installing Script Editor: {str(e)}<br>"
+                "Please install manually from Extensions Manager.</span>"
             )
 
     def showInstallMessage(self):
@@ -1093,7 +1277,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         moduleNames = slicer.app.moduleManager().modulesNames()
         scriptedModuleNames = []
         for name in moduleNames:
-            if name == "SlicerGemini":
+            if name == "DeveloperAgent":
                 continue
             try:
                 path = slicer.util.modulePath(name)
@@ -1138,6 +1322,10 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.sendButton.enabled = False
         
+        # Update logic with current settings
+        self.logic.setDebugIterations(self.debugIterationsSpinBox.value)
+        self.logic.setModel(self.modelSelector.currentData)
+        
         if scriptName:
             display_target = scriptName
             action_type = "Creating Script"
@@ -1163,7 +1351,7 @@ class SlicerGeminiWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                              f"<b>Final Error:</b><br><pre>{result['error']}</pre><hr>")
         except Exception as e:
             self.conversationView.append(f"❌ <b>An unexpected error occurred:</b><br><pre>{e}</pre><hr>")
-            logging.error(f"SlicerGemini unexpected error: {e}", exc_info=True)
+            logging.error(f"DeveloperAgent unexpected error: {e}", exc_info=True)
 
         self.promptTextEdit.clear()
         self.sendButton.enabled = True
