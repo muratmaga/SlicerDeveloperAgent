@@ -1,0 +1,10 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+
+# macOS Finder metadata
+.DS_Store
+
+# Slicer build artifacts (optional)
+*.py.bak
+*.orig
