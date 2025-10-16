@@ -1,2 +1,2 @@
-# SlicerGemini
-an agent to develop Slicer modules through Gemini
+# SlicerDeveloperAgent
+an agent to develop Slicer modules through GitHub hosted models.
