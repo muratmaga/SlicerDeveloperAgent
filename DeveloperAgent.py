@@ -22,9 +22,9 @@ class DeveloperAgent(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Developer Agent"
         self.parent.categories = ["Developer Tools"]
-        self.parent.dependencies = ["ExtensionWizard"] # Add dependency
+        self.parent.dependencies = []  # No dependencies needed for script-only development
         self.parent.contributors = ["AI Assistant"]
-        self.parent.helpText = "This module was created by DeveloperAgent."
+        self.parent.helpText = "This module creates Python scripts for 3D Slicer."
         self.parent.acknowledgementText = "This module was developed with the assistance of AI."
 
 #
@@ -195,7 +195,7 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
             self._outputCallback(formatted_msg)  # UI output
         slicer.app.processEvents()
 
-    def processRequest(self, apiKey, userPrompt, newModuleName=None, targetModuleName=None, scriptName=None, outputPath=None):
+    def processRequest(self, apiKey, userPrompt, scriptName=None, outputPath=None):
         try:
             from openai import OpenAI
             # Use GitHub Models API (included with GitHub Copilot subscription)
@@ -208,172 +208,15 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
         except Exception as e:
             return {"success": False, "error": f"Failed to initialize GitHub Models client: {str(e)}"}
 
-        if newModuleName:
-            return self.createNewModule(client, userPrompt, newModuleName, outputPath)
-        elif targetModuleName:
-            return self.modifyExistingModule(client, userPrompt, targetModuleName)
-        elif scriptName:
+        if scriptName:
             return self.createSimpleScript(client, userPrompt, scriptName, outputPath)
-        return {"success": False, "error": "No target module, new module name, or script name specified."}
+        return {"success": False, "error": "No script name specified."}
 
-    def testModuleFunctionality(self, moduleName):
-        """Test basic module functionality and capture any runtime errors"""
-        import traceback  # Ensure traceback is available in this scope
-        try:
-            self.diagnostic_print(f"Testing module '{moduleName}' functionality...")
-            
-            # Get the module's widget representation
-            self.diagnostic_print("  - Getting module widget...")
-            moduleWidget = slicer.util.getModuleWidget(moduleName)
-            if not moduleWidget:
-                raise RuntimeError(f"Could not get widget for module {moduleName}")
-            
-            # Try to access key components that should exist
-            if not hasattr(moduleWidget, 'logic'):
-                raise RuntimeError("Module widget missing 'logic' attribute")
-            
-            # Test the setup method and monitor for runtime errors
-            self.diagnostic_print("  - Running module setup and monitoring for errors...")
-            error_buffer = StringIO()
-            runtime_error = None
 
-            # Set up error monitoring
-            errorLogModel = slicer.app.errorLogModel()
-            def error_handler(msg_type, msg_text):
-                if msg_type in ['ERROR', 'FATAL', 'WARNING']:
-                    error_buffer.write(f"[{msg_type}] {msg_text}\n")
-                    
-            observer = errorLogModel.connect('messageLogged(QString, QString)', error_handler)
 
-            try:
-                # Run setup and wait for potential asynchronous errors
-                moduleWidget.setup()
-                slicer.app.processEvents()
-                qt.QThread.msleep(1000)  # Wait a second for potential async operations
-                slicer.app.processEvents()
 
-                # Check error buffer
-                if error_buffer.getvalue():
-                    runtime_error = f"Runtime errors detected:\n{error_buffer.getvalue()}"
-            finally:
-                # Disconnect the error observer
-                errorLogModel.disconnect(observer)
 
-                # Check for any errors that occurred
-            if runtime_error:
-                raise RuntimeError(runtime_error)
-                
-            self.diagnostic_print("  ✓ Module tests completed successfully")
-            return True, ""
-            
-        except Exception as e:
-            error_msg = f"Runtime test failed: {str(e)}\n{traceback.format_exc()}"
-            self.diagnostic_print(f"  ❌ {error_msg}", error=True)
-            return False, error_msg
 
-    def createNewModule(self, client, userPrompt, newModuleName, outputPath=None):
-        import traceback  # Ensure traceback is available in this scope
-        boilerplate = self.get_module_boilerplate(newModuleName)
-        
-        if outputPath:
-            # Use custom output path with Modules/ModuleName/ModuleName.py structure
-            moduleTopLevelDir = os.path.join(outputPath, "Modules", newModuleName)
-            filePath = os.path.join(moduleTopLevelDir, f"{newModuleName}.py")
-        else:
-            # Fallback to default Slicer modules directory
-            settings_dir = os.path.dirname(slicer.app.slicerUserSettingsFilePath)
-            moduleTopLevelDir = os.path.join(settings_dir, "qt-scripted-modules", newModuleName)
-            filePath = os.path.join(moduleTopLevelDir, f"{newModuleName}.py")
-
-        max_debug_attempts = self.getDebugIterations()
-        current_code = None
-        error_history = ""
-
-        for attempt in range(max_debug_attempts + 1):  # +1 for initial attempt
-            try:
-                if attempt == 0:
-                    prompt_for_creation = (
-                        f"Create a complete 3D Slicer module named '{newModuleName}' that implements the following functionality: {userPrompt}. "
-                        f"Use only modern, non-deprecated Slicer API calls. Return ONLY the complete Python code without any explanation or markdown formatting.")
-                else:
-                    prompt_for_creation = (
-                        f"Debug and fix the 3D Slicer module code. The module should implement: {userPrompt}\n"
-                        f"Use only modern, non-deprecated Slicer API calls. Current error (Debug Attempt {attempt}/{max_debug_attempts}):\n{error_history}")
-
-                newCode = self.call_ai(client, prompt_for_creation, current_code or boilerplate, error_history, "module")
-                if newCode is None:
-                    return {"success": False, "error": "AI API call failed. Check the conversation log for details. This may be due to rate limits, invalid API key, or network issues."}
-
-                # Create directory if it doesn't exist
-                if not os.path.exists(moduleTopLevelDir):
-                    os.makedirs(moduleTopLevelDir)
-
-                # Write the new code
-                self.write_code(filePath, newCode)
-                current_code = newCode
-
-                # Add module to the Python path if needed
-                if moduleTopLevelDir not in sys.path:
-                    sys.path.append(moduleTopLevelDir)
-
-                # Try to load the module
-                self.diagnostic_print(f"Attempt {attempt + 1}: Registering module...")
-                factory = slicer.app.moduleManager().factoryManager()
-                factory.registerModule(qt.QFileInfo(filePath))
-                
-                self.diagnostic_print(f"Attempt {attempt + 1}: Loading module...")
-                factory.loadModules([newModuleName])
-                
-                # Try to select and test the module
-                self.diagnostic_print(f"Attempt {attempt + 1}: Selecting module...")
-                slicer.util.selectModule(newModuleName)
-                
-                # Test the module's runtime functionality
-                test_success, test_error = self.testModuleFunctionality(newModuleName)
-                if not test_success:
-                    raise RuntimeError(f"Module loaded but failed runtime tests: {test_error}")
-                
-                # If we get here without exceptions, module loaded and tested successfully
-                result_message = f"Module '{newModuleName}' created, loaded, and tested successfully"
-                if attempt > 0:
-                    result_message += f" after {attempt} debug attempts"
-                
-                if outputPath:
-                    result_message += f".\n\nModule structure created:\n📁 {outputPath}/\n  └── 📁 Modules/\n      └── 📁 {newModuleName}/\n          └── 📄 {newModuleName}.py"
-                else:
-                    result_message += f". Saved in: {moduleTopLevelDir}"
-                
-                return {"success": True, "message": result_message}
-
-            except Exception as e:
-                error_msg = f"Error on attempt {attempt + 1}:\n{str(e)}\n{traceback.format_exc()}"
-                self.diagnostic_print(f"Module creation/loading failed:\n{error_msg}", error=True)
-                error_history = error_msg
-                
-                if attempt == max_debug_attempts:
-                    return {"success": False, "error": f"Failed to create/load module after {max_debug_attempts} debug attempts. Final error: {str(e)}\n\nError History:\n{error_history}"}
-                
-                # Continue to next attempt
-
-    def modifyExistingModule(self, client, userPrompt, moduleName):
-        modulePath = slicer.util.modulePath(moduleName)
-        initialCode = self.read_code(modulePath)
-        currentCode = initialCode
-        errorHistory = ""
-        maxAttempts = self.getDebugIterations()
-        for attempt in range(maxAttempts):
-            newCode = self.call_ai(client, userPrompt, currentCode, errorHistory, "module")
-            if newCode is None:
-                return {"success": False, "error": "AI API call failed. Check the conversation log for details. This may be due to rate limits, invalid API key, or network issues."}
-            self.write_code(modulePath, newCode)
-            reloadResult = self.reload_and_capture(moduleName)
-            if reloadResult["success"]:
-                return {"success": True, "message": f"Module '{moduleName}' modified successfully."}
-            errorHistory += f"\n--- Attempt {attempt + 1} Error ---\n{reloadResult['error']}"
-            currentCode = newCode
-        self.write_code(modulePath, initialCode)
-        self.reload_and_capture(moduleName)
-        return {"success": False, "error": errorHistory}
 
     def createSimpleScript(self, client, userPrompt, scriptName, outputPath=None):
         """Create a simple Python script that can be executed in Slicer's Python console"""
@@ -735,30 +578,7 @@ print("Script executed successfully!")
         except Exception as e:
             self.diagnostic_print(f"Debug failed: {e}")
 
-    def get_module_boilerplate(self, moduleName):
-        return f"""
-import slicer
-from slicer.ScriptedLoadableModule import *
-import logging
 
-class {moduleName}(ScriptedLoadableModule):
-    def __init__(self, parent):
-        ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = "{moduleName}"
-        self.parent.categories = ["Examples"]
-        self.parent.contributors = ["DeveloperAgent (AI)"]
-        self.parent.helpText = "This module was created by DeveloperAgent."
-
-class {moduleName}Widget(ScriptedLoadableModuleWidget):
-    def setup(self):
-        ScriptedLoadableModuleWidget.setup(self)
-        pass
-
-class {moduleName}Logic(ScriptedLoadableModuleLogic):
-    def __init__(self):
-        ScriptedLoadableModuleLogic.__init__(self)
-    pass
-"""
 
     def read_code(self, file_path):
         try:
@@ -772,7 +592,7 @@ class {moduleName}Logic(ScriptedLoadableModuleLogic):
                 f.write(new_code)
         except: pass
 
-    def call_ai(self, client, prompt, code_context, error_history, request_type="module"):
+    def call_ai(self, client, prompt, code_context, error_history, request_type="script"):
         
         # DIAGNOSTIC: Log what we're sending to the AI
         self.diagnostic_print("=" * 80)
@@ -785,63 +605,135 @@ class {moduleName}Logic(ScriptedLoadableModuleLogic):
             self.diagnostic_print(f"Error History (first 500 chars): {error_history[:500]}...")
         self.diagnostic_print("=" * 80)
         
-        base_prompt = """You are an expert 3D Slicer Python developer. 
-        Respond ONLY with complete, working Python code that can be directly saved and executed.
-        Do not include explanations, markdown formatting, or code blocks - just raw Python code.
+        base_prompt = """You are an expert 3D Slicer Python developer with deep knowledge of medical imaging, VTK, and the Slicer API.
 
-        Essential imports: import slicer, slicer.util, logging
-        For downloads: import SampleData
-        Note: SampleData.downloadFromURL() returns a LIST of nodes, not a single node
-        Example: volume_node = SampleData.downloadFromURL(url)[0]  # Get first node from list
+        YOUR ROLE:
+        - Understand the user's intent completely before coding
+        - Break down complex requests into logical steps
+        - Choose the most appropriate APIs and approaches
+        - Write production-quality, maintainable code
+        - Anticipate edge cases and handle errors gracefully
+
+        CRITICAL REQUIREMENTS:
+        1. Output ONLY raw Python code - no markdown, no explanations, no code blocks
+        2. Code must be immediately executable in 3D Slicer environment
+        3. Use ONLY modern, non-deprecated APIs (check documentation if unsure)
+        4. Include proper imports at the top
+        5. Validate inputs and handle errors appropriately
+
+        CODING STANDARDS:
+        - Clear variable names that reflect medical imaging concepts
+        - Comments explaining WHY, not WHAT (code should be self-documenting)
+        - Print statements for progress feedback to users
+        - Defensive programming: check for None, validate data before use
+        - Prefer slicer.util helper functions over low-level VTK when available
+        - Follow Python PEP 8 style conventions
+
+        COMMON PATTERNS TO REMEMBER:
+        - SampleData.downloadFromURL(urls=[url]) returns a LIST: use [0] to get first item
+        - Always check if nodes exist before using: if node is None: handle error
+        - VTK methods use CapitalCase: GetID(), SetName(), etc.
+        - Layout constants: slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView
+        - Scene operations: slicer.mrmlScene for accessing scene
+        - Utility functions: slicer.util has many helpful shortcuts
+
+        STEP-BY-STEP APPROACH:
+        1. Parse the requirement to understand the goal
+        2. Identify required data, inputs, and outputs
+        3. Determine appropriate Slicer APIs and modules
+        4. Structure code logically with clear sections
+        5. Add validation and error handling
+        6. Include user feedback via print statements
+
+        DOCUMENTATION RESOURCES:
+        - API Reference: https://slicer.readthedocs.io/en/latest/developer_guide/api.html
+        - Script Repository: https://slicer.readthedocs.io/en/latest/developer_guide/script_repository.html
+        - Source Code: https://github.com/Slicer/Slicer
+
+        WHEN GENERATING CODE:
+        - Think through the logic before writing
+        - Use established patterns from the script repository
+        - Test assumptions (e.g., return types, parameter expectations)
+        - Make code robust enough to handle typical failure modes
+        - Keep it simple - don't over-engineer
         
-        RESOURCES:
-        - Official API documentation: https://slicer.readthedocs.io/en/latest/developer_guide/api.html
-        - Script repository: https://slicer.readthedocs.io/en/latest/developer_guide/script_repository.html
-        - Official Slicer source code repository https://github.com/Slicer/Slicer
-        - When encountering AttributeError, check the exact class/method names in the documentation
-        - VTK methods in Slicer use CapitalCase (e.g., GetID, SetVisibility, CreateNode)
-        - When Python suggests "Did you mean: X?", use X exactly as suggested
-        - For complex tasks, prefer slicer.util helper functions over low-level VTK APIs
-        
-        Focus on writing clean, working code that follows proper Python and Slicer patterns."""
+        Remember: Your code will be tested immediately. Ensure it works correctly on the first try."""
 
-        if request_type == "script":
-            system_prompt = base_prompt + """
+        system_prompt = base_prompt + """
 
-        SCRIPT REQUIREMENTS:
+        SCRIPT-SPECIFIC REQUIREMENTS:
         - Standalone Python script for Slicer's Python console
         - Write code at module level (NO main() function, NO if __name__ == "__main__")
         - Execute statements directly in sequence for clear line-by-line error reporting
-        - DO NOT use try/except blocks - let errors propagate naturally for debugging
-        - DO NOT use slicer.util.errorDisplay() or slicer.util.infoDisplay() 
-        - Use print() statements for output instead
-        - Clear comments explaining each section
-        - NO tuple unpacking without certainty about return values
-        - Code should fail loudly if there are errors so they can be fixed
-        """
-        else:
-            system_prompt = base_prompt + """
-
-        MODULE REQUIREMENTS:
-        - Full ScriptedLoadableModule implementation
-        - Classes: ModuleName, ModuleNameWidget, ModuleNameLogic  
-        - Inherit from ScriptedLoadableModule, ScriptedLoadableModuleWidget, ScriptedLoadableModuleLogic
-        - Proper setup() method in Widget class
-        - Complete module metadata (title, categories, contributors, helpText)
-        - Qt widget patterns for UI
-        - Logic separated from UI
+        - Use print() statements for progress updates and user feedback
+        - DO NOT use try/except blocks unless absolutely necessary for expected failures
+        - Let unexpected errors propagate naturally for easier debugging
+        
+        SCRIPT STRUCTURE (adapt to task):
+        1. Import required modules (slicer, slicer.util, other needed imports)
+        2. Define any helper functions if needed (keep minimal)
+        3. Main logic executed sequentially at module level
+        4. Print final status message
+        
+        VALIDATION CHECKLIST:
+        - All imports are available in Slicer environment
+        - Variables are defined before use
+        - Return values are checked (not None) before dereferencing
+        - API calls use correct parameter types and order
+        - Print statements guide user through execution
+        
+        EXAMPLE STRUCTURE (adapt pattern, not content):
+        import slicer
+        import slicer.util
+        
+        # Step 1: Prepare/load data
+        print("Step 1: Loading data...")
+        # your code here
+        
+        # Step 2: Process data
+        print("Step 2: Processing...")
+        # your code here
+        
+        # Step 3: Output results
+        print("Step 3: Finalizing...")
+        # your code here
+        
+        print("✅ Completed successfully")
         """
 
         user_prompt = f"""
-## Task: {prompt}
+USER REQUEST:
+{prompt}
 
-## Error History (if any):
+CONTEXT AND CONSTRAINTS:
+- Target environment: 3D Slicer Python console
+- Expected output: Complete, executable Python code
+- Error handling: Include validation but let critical errors surface for debugging
+- User feedback: Use print() statements to communicate progress
+
+{f'''
+PREVIOUS ATTEMPT FAILED - ANALYZE AND FIX:
 {error_history}
 
-## Code Template/Context:
+DEBUGGING INSTRUCTIONS:
+1. Carefully read the error message to understand what went wrong
+2. Check if the API usage matches the official documentation
+3. Verify all return types and handle None cases
+4. Look for typos in method names (VTK uses CapitalCase)
+5. Ensure all required imports are present
+6. Consider alternative approaches if the same error repeats
+7. Reference the Script Repository for working examples of similar tasks
+''' if error_history else ''}
+
+CODE CONTEXT (previous attempt or template):
 {code_context}
 
-Generate working Slicer code that implements the requested functionality. Focus on correctness and proper API usage.
+INSTRUCTIONS:
+- Generate complete, working code that addresses the user request
+- If this is a retry, analyze the error and fix the specific issue
+- Ensure the code follows all requirements and best practices above
+- Double-check API usage against documentation
+- Output ONLY the Python code, no explanations or markdown
 """
 
         try:
@@ -963,19 +855,7 @@ Generate working Slicer code that implements the requested functionality. Focus 
         
         return issues
 
-    def reload_and_capture(self, module_name):
-        import traceback  # Ensure traceback is available in this scope
-        output_buffer = StringIO()
-        success = False
-        try:
-            with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(output_buffer):
-                slicer.util.reloadScriptedModule(module_name)
-                if "Traceback" not in output_buffer.getvalue():
-                    success = True
-        except:
-            import traceback
-            output_buffer.write(f"\n--- EXCEPTION DURING RELOAD ---\n{traceback.format_exc()}")
-        return {"success": success, "error": output_buffer.getvalue()}
+
 
 #
 # DeveloperAgentWidget
@@ -1037,27 +917,15 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         outputPathLayout.addWidget(self.browseOutputPathButton)
         setupFormLayout.addRow("Output Directory:", outputPathLayout)
 
-        # --- Development Assistant ---
+        # --- Script Development ---
         devCollapsibleButton = ctk.ctkCollapsibleButton()
-        devCollapsibleButton.text = "Development Assistant"
+        devCollapsibleButton.text = "Script Development"
         devCollapsibleButton.collapsed = False
         self.layout.addWidget(devCollapsibleButton)
         devFormLayout = qt.QFormLayout(devCollapsibleButton)
 
-        # --- New Module Creation ---
-        devFormLayout.addRow(qt.QLabel("<b>Option 1: Create a New Module</b>"))
-        self.newModuleNameLineEdit = qt.QLineEdit()
-        self.newModuleNameLineEdit.setPlaceholderText("e.g., MyVolumeRenderer")
-        devFormLayout.addRow("New Module Name:", self.newModuleNameLineEdit)
-
-        # --- Existing Module Modification ---
-        devFormLayout.addRow(qt.QLabel("<b>Option 2: Modify an Existing Module</b>"))
-        self.targetModuleSelector = qt.QComboBox()
-        self.populateModuleSelector()
-        devFormLayout.addRow("Target Module:", self.targetModuleSelector)
-
-        # --- Simple Python Script Creation ---
-        devFormLayout.addRow(qt.QLabel("<b>Option 3: Create a Simple Python Script</b>"))
+        # --- Python Script Creation ---
+        devFormLayout.addRow(qt.QLabel("<b>Create a Python Script</b>"))
         self.scriptNameLineEdit = qt.QLineEdit()
         self.scriptNameLineEdit.setPlaceholderText("e.g., MyDataProcessor")
         devFormLayout.addRow("Script Name:", self.scriptNameLineEdit)
@@ -1099,14 +967,11 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.promptTextEdit.setPlainText("Create a script that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd")
         self.promptTextEdit.setFixedHeight(100)
         devFormLayout.addRow(self.promptTextEdit)
-        self.sendButton = qt.QPushButton("🚀 Send Prompt to AI (GPT-4o via GitHub)")
+        self.sendButton = qt.QPushButton("🚀 Generate Python Script (GPT-4o via GitHub)")
         devFormLayout.addRow(self.sendButton)
 
         # Connections
         self.sendButton.clicked.connect(self.onSendPromptButtonClicked)
-        self.newModuleNameLineEdit.textChanged.connect(self.onNewModuleNameChanged)
-        self.targetModuleSelector.currentIndexChanged.connect(self.onTargetModuleChanged)
-        self.scriptNameLineEdit.textChanged.connect(self.onScriptNameChanged)
 
         self.layout.addStretch(1)
 
@@ -1117,20 +982,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.conversationView.verticalScrollBar().maximum)
         slicer.app.processEvents()
 
-    def onNewModuleNameChanged(self, text):
-        has_text = bool(text)
-        self.targetModuleSelector.enabled = not has_text
-        self.scriptNameLineEdit.enabled = not has_text
 
-    def onTargetModuleChanged(self, index):
-        has_selection = index > 0
-        self.newModuleNameLineEdit.enabled = not has_selection
-        self.scriptNameLineEdit.enabled = not has_selection
-
-    def onScriptNameChanged(self, text):
-        has_text = bool(text)
-        self.newModuleNameLineEdit.enabled = not has_text
-        self.targetModuleSelector.enabled = not has_text
 
     def onBrowseOutputPath(self):
         """Browse for output directory"""
@@ -1271,28 +1123,11 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.pip_install('openai')
             self.conversationView.append("<b>Installation complete.</b>")
 
-    def populateModuleSelector(self):
-        self.targetModuleSelector.clear()
-        self.targetModuleSelector.addItem("", None)
-        moduleNames = slicer.app.moduleManager().modulesNames()
-        scriptedModuleNames = []
-        for name in moduleNames:
-            if name == "DeveloperAgent":
-                continue
-            try:
-                path = slicer.util.modulePath(name)
-                if path and path.endswith('.py'):
-                    scriptedModuleNames.append(name)
-            except:
-                continue
-        scriptedModuleNames.sort()
-        self.targetModuleSelector.addItems(scriptedModuleNames)
+
 
     def onSendPromptButtonClicked(self):
         apiKey = self.apiKeyLineEdit.text.strip()
         userPrompt = self.promptTextEdit.toPlainText().strip()
-        newModuleName = self.newModuleNameLineEdit.text.strip()
-        targetModuleName = self.targetModuleSelector.currentText
         scriptName = self.scriptNameLineEdit.text.strip()
         outputPath = self.outputPathLineEdit.text.strip()
 
@@ -1302,8 +1137,8 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not userPrompt:
             slicer.util.warningDisplay("Please enter a development prompt.")
             return
-        if not newModuleName and not targetModuleName and not scriptName:
-            slicer.util.warningDisplay("Please either enter a 'New Module Name', select a 'Target Module', or enter a 'Script Name'.")
+        if not scriptName:
+            slicer.util.warningDisplay("Please enter a 'Script Name'.")
             return
         if not outputPath:
             slicer.util.warningDisplay("Please specify an output directory.")
@@ -1326,15 +1161,8 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic.setDebugIterations(self.debugIterationsSpinBox.value)
         self.logic.setModel(self.modelSelector.currentData)
         
-        if scriptName:
-            display_target = scriptName
-            action_type = "Creating Script"
-        elif newModuleName:
-            display_target = newModuleName
-            action_type = "Creating Module"
-        else:
-            display_target = targetModuleName
-            action_type = "Modifying Module"
+        display_target = scriptName
+        action_type = "Creating Script"
             
         self.conversationView.append(f"<h2>New Request</h2><b>{action_type}:</b> {display_target}<br>"
                                      f"<b>Prompt:</b> {userPrompt}<br>"
@@ -1342,10 +1170,9 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         slicer.app.processEvents()
 
         try:
-            result = self.logic.processRequest(apiKey, userPrompt, newModuleName, targetModuleName, scriptName, outputPath)
+            result = self.logic.processRequest(apiKey, userPrompt, scriptName, outputPath)
             if result['success']:
                 self.conversationView.append(f"✅ <b>Success!</b><br>{result['message']}<hr>")
-                self.populateModuleSelector()
             else:
                 self.conversationView.append(f"❌ <b>Failed.</b><br>"
                                              f"<b>Final Error:</b><br><pre>{result['error']}</pre><hr>")
