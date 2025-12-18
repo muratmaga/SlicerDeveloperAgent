@@ -1,0 +1,46 @@
+{
+  "version": "1.0",
+  "description": "Hand-curated Slicer code examples showing complete workflows",
+  "examples": [
+    {
+      "heading": "Complete Threshold Segmentation Workflow",
+      "description": "Full workflow for segmenting a volume using threshold method in Segment Editor",
+      "keywords": ["segment", "threshold", "segmentation", "AddEmptySegment", "SetSelectedSegmentID", "segment editor"],
+      "code": "import slicer\n\nprint(\"Getting volume node...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating segmentation node...\")\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\n\nprint(\"Adding empty segment...\")\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Segment_1\")\n\nprint(\"Setting up Segment Editor...\")\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\n\nprint(\"Selecting segment...\")\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nprint(\"Applying threshold...\")\nsegmentEditorWidget.setActiveEffectByName(\"Threshold\")\neffect = segmentEditorWidget.activeEffect()\neffect.setParameter(\"MinimumThreshold\", \"30\")\neffect.setParameter(\"MaximumThreshold\", \"255\")\neffect.self().onApply()\n\nprint(\"Cleaning up...\")\nsegmentEditorWidget.setActiveEffect(None)\n\nprint(\"✅ Segmentation complete!\")",
+      "source": "curated",
+      "priority": 100
+    },
+    {
+      "heading": "Load Volume from URL with SampleData",
+      "description": "Download and load a volume from a URL using SampleData module",
+      "keywords": ["load", "download", "URL", "SampleData", "downloadFromURL", "volume"],
+      "code": "import slicer\nimport SampleData\n\nprint(\"Downloading volume from URL...\")\nurl = \"https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/...\"\nvolumeNode = SampleData.downloadFromURL(url)[0]\n\nprint(f\"Loaded: {volumeNode.GetName()}\")\n\nprint(\"Setting up 3D view...\")\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)\nslicer.util.resetThreeDViews()\n\nprint(\"✅ Complete!\")",
+      "source": "curated",
+      "priority": 100
+    },
+    {
+      "heading": "Paint Segmentation with Segment Editor",
+      "description": "Create segmentation and use Paint effect with Segment Editor",
+      "keywords": ["segment", "paint", "segmentation", "AddEmptySegment", "segment editor"],
+      "code": "import slicer\n\nprint(\"Getting volume...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating segmentation...\")\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\n\nprint(\"Adding segment...\")\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Painted_Region\")\n\nprint(\"Setting up Segment Editor...\")\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nprint(\"Ready for painting!\")\nsegmentEditorWidget.setActiveEffectByName(\"Paint\")\n\nprint(\"✅ Segment Editor ready!\")",
+      "source": "curated",
+      "priority": 95
+    },
+    {
+      "heading": "Volume Rendering Setup",
+      "description": "Set up volume rendering with preset for 3D visualization",
+      "keywords": ["render", "volume rendering", "3D", "visualization", "preset"],
+      "code": "import slicer\n\nprint(\"Getting volume...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating volume rendering...\")\nvolRenLogic = slicer.modules.volumerendering.logic()\ndisplayNode = volRenLogic.CreateDefaultVolumeRenderingNodes(volumeNode)\ndisplayNode.SetVisibility(True)\n\nprint(\"Applying CT-AAA preset...\")\npreset = volRenLogic.GetPresetByName(\"CT-AAA\")\npreset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n\nprint(\"Setting up 3D view...\")\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)\n\nprint(\"✅ Volume rendering active!\")",
+      "source": "curated",
+      "priority": 90
+    },
+    {
+      "heading": "Grow from Seeds Segmentation",
+      "description": "Create segmentation using Grow from seeds method",
+      "keywords": ["segment", "grow from seeds", "segmentation", "AddEmptySegment"],
+      "code": "import slicer\n\nprint(\"Setting up...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating segmentation...\")\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\n\nprint(\"Adding segment...\")\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Region\")\n\nprint(\"Setting up Segment Editor...\")\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nprint(\"Applying Grow from seeds...\")\nsegmentEditorWidget.setActiveEffectByName(\"Grow from seeds\")\neffect = segmentEditorWidget.activeEffect()\neffect.self().onApply()\n\nprint(\"✅ Segmentation complete!\")",
+      "source": "curated",
+      "priority": 85
+    }
+  ]
+}

@@ -13,6 +13,28 @@ from slicer.util import VTKObservationMixin
 import qt
 import ctk
 
+# Try to import custom prompt configuration
+try:
+    # Look for prompts_config.py in Resources subdirectory
+    # Slicer only loads modules from top-level, so config in subdirectory is safe
+    import importlib.util
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    prompt_file = os.path.join(module_dir, "Resources", "prompts_config.py")
+    
+    if os.path.exists(prompt_file):
+        spec = importlib.util.spec_from_file_location("prompts_config", prompt_file)
+        slicer_prompts = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(slicer_prompts)
+        PROMPTS_LOADED = True
+        PROMPTS_SOURCE = prompt_file
+    else:
+        PROMPTS_LOADED = False
+        PROMPTS_SOURCE = "built-in"
+except Exception as e:
+    PROMPTS_LOADED = False
+    PROMPTS_SOURCE = f"error: {str(e)}"
+    logging.warning(f"Could not load Resources/prompts_config.py: {e}. Using built-in prompts.")
+
 #
 # DeveloperAgent
 #
@@ -38,6 +60,96 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
         # Track last created/updated script for quick opening in Script Editor
         self.lastScriptNodeID = None
         self.lastScriptFilePath = None
+        
+        # Report prompt configuration source
+        if PROMPTS_LOADED:
+            logging.info(f"DeveloperAgent: Using custom prompts from {PROMPTS_SOURCE}")
+        else:
+            logging.info(f"DeveloperAgent: Using built-in prompts ({PROMPTS_SOURCE})")
+
+    def _get_prompts(self, user_request=""):
+        """Get prompt configuration from external file or use built-in fallback
+        
+        Args:
+            user_request: The user's request text for RAG retrieval
+        """
+        if PROMPTS_LOADED:
+            # Load Slicer documentation dynamically using RAG
+            slicer_docs = self._load_slicer_documentation(user_request)
+            
+            # Append documentation to base prompt
+            base_prompt = slicer_prompts.SYSTEM_PROMPT_BASE
+            if slicer_docs:
+                base_prompt += f"\n\n{slicer_docs}"
+            
+            return {
+                'base': base_prompt,
+                'script_requirements': slicer_prompts.SYSTEM_PROMPT_SCRIPT_REQUIREMENTS,
+                'user_template': slicer_prompts.USER_PROMPT_TEMPLATE,
+                'error_section': slicer_prompts.ERROR_ANALYSIS_SECTION,
+                'ai_params': slicer_prompts.AI_PARAMETERS,
+                'available_models': getattr(slicer_prompts, 'AVAILABLE_MODELS', []),
+                'default_model': getattr(slicer_prompts, 'DEFAULT_MODEL', 'gpt-4o'),
+                'version': getattr(slicer_prompts, 'PROMPT_VERSION', 'unknown')
+            }
+        else:
+            # Built-in fallback prompts (abbreviated for space)
+            return self._get_builtin_prompts()
+    
+    def _load_slicer_documentation(self, user_request=""):
+        """Load Slicer API documentation using RAG for targeted retrieval"""
+        try:
+            # Import RAG retriever from Resources directory
+            import sys
+            resources_dir = os.path.join(os.path.dirname(__file__), 'Resources')
+            if resources_dir not in sys.path:
+                sys.path.insert(0, resources_dir)
+            
+            from rag_retriever import SlicerRAG
+            
+            # Initialize RAG retriever
+            rag = SlicerRAG()
+            
+            # Retrieve examples relevant to user's specific request
+            if user_request:
+                examples = rag.retrieve_examples(user_request, top_k=5)
+            else:
+                # No specific request yet, return empty
+                examples = []
+            
+            # Format for prompt (limit to 3000 chars)
+            formatted_docs = rag.format_for_prompt(examples, max_chars=3000)
+            
+            return formatted_docs
+        except Exception as e:
+            # If RAG fails, fall back to empty (won't break the agent)
+            print(f"Warning: Could not load Slicer documentation via RAG: {e}")
+            return ""
+    
+    def _get_builtin_prompts(self):
+        """Built-in fallback prompts when external file not available"""
+        return {
+            'base': """You are an expert 3D Slicer Python developer. Generate working Python code.
+            Use proven patterns. Output ONLY code, no markdown.""",
+            'script_requirements': """
+            Write standalone scripts for Slicer console.
+            Include imports, error handling, and print statements.""",
+            'user_template': """
+USER REQUEST: {prompt}
+{error_section}
+CODE CONTEXT: {code_context}
+Generate complete, executable code.""",
+            'error_section': """PREVIOUS ATTEMPT FAILED:
+{error_history}
+Analyze the error and fix it.""",
+            'ai_params': {'temperature': 0.3, 'max_tokens': 8000},
+            'available_models': [
+                ("GPT-4o (Recommended)", "gpt-4o"),
+                ("GPT-4o Mini", "gpt-4o-mini"),
+            ],
+            'default_model': 'gpt-4o',
+            'version': 'built-in-fallback'
+        }
 
     def setOutputCallback(self, callback):
         """Set callback function to receive diagnostic output"""
@@ -57,7 +169,12 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
     
     def getModel(self):
         """Get the AI model to use"""
-        return getattr(self, '_model', 'gpt-4o')
+        # Get default from configuration if available
+        if PROMPTS_LOADED:
+            default_model = getattr(slicer_prompts, 'DEFAULT_MODEL', 'gpt-4o')
+        else:
+            default_model = 'gpt-4o'
+        return getattr(self, '_model', default_model)
 
     def loadScriptIntoScene(self, script_file_path):
         """Load a .py file into the MRML scene as a Python script text node using Script Editor conventions.
@@ -415,8 +532,6 @@ print("Script executed successfully!")
             self.diagnostic_print(f"Executing '{script_name}' in Slicer Python console...")
             
             # Clear the scene before execution to ensure clean state
-            self.diagnostic_print("Clearing scene for clean test execution...")
-            slicer.mrmlScene.Clear(0)
             
             # Execute the script directly and let errors propagate
             try:
@@ -603,169 +718,46 @@ print("Script executed successfully!")
         self.diagnostic_print(f"Error History Length: {len(error_history)} chars")
         if error_history:
             self.diagnostic_print(f"Error History (first 500 chars): {error_history[:500]}...")
+        
+        # Load prompt configuration with user request for RAG retrieval
+        prompts = self._get_prompts(user_request=prompt)
+        self.diagnostic_print(f"Using prompt version: {prompts['version']}")
+        self.diagnostic_print(f"Prompt source: {'custom' if PROMPTS_LOADED else 'built-in'}")
         self.diagnostic_print("=" * 80)
         
-        base_prompt = """You are an expert 3D Slicer Python developer with deep knowledge of medical imaging, VTK, and the Slicer API.
-
-        YOUR ROLE:
-        - Understand the user's intent completely before coding
-        - Break down complex requests into logical steps
-        - Choose the most appropriate APIs and approaches
-        - Write production-quality, maintainable code
-        - Anticipate edge cases and handle errors gracefully
-
-        CRITICAL REQUIREMENTS:
-        1. Output ONLY raw Python code - no markdown, no explanations, no code blocks
-        2. Code must be immediately executable in 3D Slicer environment
-        3. Use ONLY modern, non-deprecated APIs (check documentation if unsure)
-        4. Include proper imports at the top
-        5. Validate inputs and handle errors appropriately
-
-        CODING STANDARDS:
-        - Clear variable names that reflect medical imaging concepts
-        - Comments explaining WHY, not WHAT (code should be self-documenting)
-        - Print statements for progress feedback to users
-        - Defensive programming: check for None, validate data before use
-        - Prefer slicer.util helper functions over low-level VTK when available
-        - Follow Python PEP 8 style conventions
-
-        COMMON PATTERNS TO REMEMBER:
-        - SampleData.downloadFromURL(urls=[url]) returns a LIST: use [0] to get first item
-        - Always check if nodes exist before using: if node is None: handle error
-        - VTK methods use CapitalCase: GetID(), SetName(), etc.
-        - Layout constants: slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView
-        - Scene operations: slicer.mrmlScene for accessing scene
-        - Utility functions: slicer.util has many helpful shortcuts
-
-        STEP-BY-STEP APPROACH:
-        1. Parse the requirement to understand the goal
-        2. Identify required data, inputs, and outputs
-        3. Determine appropriate Slicer APIs and modules
-        4. Structure code logically with clear sections
-        5. Add validation and error handling
-        6. Include user feedback via print statements
-
-        DOCUMENTATION RESOURCES:
-        - API Reference: https://slicer.readthedocs.io/en/latest/developer_guide/api.html
-        - Script Repository: https://slicer.readthedocs.io/en/latest/developer_guide/script_repository.html
-        - Source Code: https://github.com/Slicer/Slicer
-
-        WHEN GENERATING CODE:
-        - Think through the logic before writing
-        - Use established patterns from the script repository
-        - Test assumptions (e.g., return types, parameter expectations)
-        - Make code robust enough to handle typical failure modes
-        - Keep it simple - don't over-engineer
+        # Build system prompt from configuration
+        system_prompt = prompts['base'] + prompts['script_requirements']
         
-        Remember: Your code will be tested immediately. Ensure it works correctly on the first try."""
-
-        system_prompt = base_prompt + """
-
-        SCRIPT-SPECIFIC REQUIREMENTS:
-        - Standalone Python script for Slicer's Python console
-        - Write code at module level (NO main() function, NO if __name__ == "__main__")
-        - Execute statements directly in sequence for clear line-by-line error reporting
-        - Use print() statements for progress updates and user feedback
-        - DO NOT use try/except blocks unless absolutely necessary for expected failures
-        - Let unexpected errors propagate naturally for easier debugging
+        # Build user prompt with error section if needed
+        error_section = ""
+        if error_history:
+            error_section = prompts['error_section'].format(error_history=error_history)
         
-        SCRIPT STRUCTURE (adapt to task):
-        1. Import required modules (slicer, slicer.util, other needed imports)
-        2. Define any helper functions if needed (keep minimal)
-        3. Main logic executed sequentially at module level
-        4. Print final status message
-        
-        VALIDATION CHECKLIST:
-        - All imports are available in Slicer environment
-        - Variables are defined before use
-        - Return values are checked (not None) before dereferencing
-        - API calls use correct parameter types and order
-        - Print statements guide user through execution
-        
-        EXAMPLE STRUCTURE (adapt pattern, not content):
-        import slicer
-        import slicer.util
-        
-        # Step 1: Prepare/load data
-        print("Step 1: Loading data...")
-        # your code here
-        
-        # Step 2: Process data
-        print("Step 2: Processing...")
-        # your code here
-        
-        # Step 3: Output results
-        print("Step 3: Finalizing...")
-        # your code here
-        
-        print("✅ Completed successfully")
-        """
-
-        user_prompt = f"""
-USER REQUEST:
-{prompt}
-
-CONTEXT AND CONSTRAINTS:
-- Target environment: 3D Slicer Python console
-- Expected output: Complete, executable Python code
-- Error handling: Include validation but let critical errors surface for debugging
-- User feedback: Use print() statements to communicate progress
-
-{f'''
-PREVIOUS ATTEMPT FAILED - ANALYZE AND FIX:
-{error_history}
-
-DEBUGGING INSTRUCTIONS:
-1. Carefully read the error message to understand what went wrong
-2. Check if the API usage matches the official documentation
-3. Verify all return types and handle None cases
-4. Look for typos in method names (VTK uses CapitalCase)
-5. Ensure all required imports are present
-6. Consider alternative approaches if the same error repeats
-7. Reference the Script Repository for working examples of similar tasks
-''' if error_history else ''}
-
-CODE CONTEXT (previous attempt or template):
-{code_context}
-
-INSTRUCTIONS:
-- Generate complete, working code that addresses the user request
-- If this is a retry, analyze the error and fix the specific issue
-- Ensure the code follows all requirements and best practices above
-- Double-check API usage against documentation
-- Output ONLY the Python code, no explanations or markdown
-"""
+        user_prompt = prompts['user_template'].format(
+            prompt=prompt,
+            error_section=error_section,
+            code_context=code_context
+        )
 
         try:
-            # Use AI-21 Jamba 1.5 Large or GPT-4o via GitHub Models (excellent for code development)
-            # Note: GitHub Models available models include gpt-4o, gpt-4o-mini, AI21-Jamba-1.5-Large, etc.
-            
             # DIAGNOSTIC: Log the full user prompt being sent
-            full_user_message = f"""
-## Task: {prompt}
-
-## Error History (if any):
-{error_history}
-
-## Code Template/Context:
-{code_context}
-
-Generate working Slicer code that implements the requested functionality. Focus on correctness and proper API usage.
-"""
-            self.diagnostic_print(f"SENDING TO AI - Full message length: {len(full_user_message)} chars")
+            self.diagnostic_print(f"SENDING TO AI - Full message length: {len(user_prompt)} chars")
             
             # Get the model from settings
             model_name = self.getModel()
             self.diagnostic_print(f"Using AI model: {model_name}")
             
+            # Get AI parameters from configuration
+            ai_params = prompts['ai_params']
+            
             response = client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": full_user_message}
+                    {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
-                max_tokens=8000
+                temperature=ai_params.get('temperature', 0.3),
+                max_tokens=ai_params.get('max_tokens', 8000)
             )
             
             generated_code = response.choices[0].message.content.strip()
@@ -841,17 +833,43 @@ Generate working Slicer code that implements the requested functionality. Focus 
         """Validate generated code against known Slicer API patterns and common mistakes"""
         issues = []
         
-        # Minimal validation - let runtime errors teach the AI
-        
         # Check for missing essential imports
         if "import slicer" not in code:
             issues.append("Missing essential import: import slicer")
+        
+        # Check for SampleData usage without import
+        if "SampleData." in code and "import SampleData" not in code:
+            issues.append("Using SampleData without import - add 'import SampleData'")
+        
+        # Check for common mistake: forgetting [0] on SampleData.downloadFromURL
+        if "SampleData.downloadFromURL(" in code and "downloadFromURL(urls=" in code:
+            # Check if followed by [0] within reasonable distance
+            import re
+            pattern = r'SampleData\.downloadFromURL\([^)]+\)(?!\[0\])'
+            matches = re.findall(pattern, code)
+            if matches:
+                issues.append("CRITICAL: SampleData.downloadFromURL returns a LIST - must use [0] to get first element")
+        
+        # Check for node operations without None checks
+        if ".GetName()" in code or ".GetID()" in code or ".SetName(" in code:
+            if "if" not in code and "is None" not in code:
+                issues.append("WARNING: Node operations without None checks may fail")
+        
+        # Check for lowercase VTK method names (common mistake)
+        vtk_method_patterns = ['.getname(', '.setname(', '.getid(', '.setvisibility(']
+        for pattern in vtk_method_patterns:
+            if pattern in code.lower() and pattern in code:
+                issues.append(f"ERROR: VTK uses CapitalCase methods - found lowercase '{pattern}'")
+        
+        # Check for invalid layout constants
+        if "setLayout(0)" in code or "setLayout(1)" in code:
+            issues.append("WARNING: Use named layout constants like slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView")
         
         # Check for basic Python syntax issues
         try:
             compile(code, '<string>', 'exec')
         except SyntaxError as e:
-            issues.append(f"Syntax error: {str(e)}")
+            issues.append(f"SYNTAX ERROR: {str(e)}")
         
         return issues
 
@@ -893,13 +911,20 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         
         # --- Model Selection ---
         self.modelSelector = qt.QComboBox()
-        self.modelSelector.addItem("GPT-4o (Recommended)", "gpt-4o")
-        self.modelSelector.addItem("GPT-4o Mini (Faster, Lower Quota)", "gpt-4o-mini")
-        self.modelSelector.addItem("GPT-4 Turbo", "gpt-4-turbo")
-        self.modelSelector.addItem("AI21 Jamba 1.5 Large", "AI21-Jamba-1.5-Large")
-        self.modelSelector.addItem("AI21 Jamba 1.5 Mini", "AI21-Jamba-1.5-Mini")
-        self.modelSelector.setCurrentIndex(0)  # Default to GPT-4o
-        self.modelSelector.setToolTip("Select the AI model to use for code generation. Different models have different rate limits and capabilities.")
+        # Load models from configuration
+        prompts = self.logic._get_prompts()
+        available_models = prompts.get('available_models', [("GPT-4o", "gpt-4o")])
+        default_model = prompts.get('default_model', 'gpt-4o')
+        
+        # Populate model selector
+        default_index = 0
+        for i, (display_name, model_id) in enumerate(available_models):
+            self.modelSelector.addItem(display_name, model_id)
+            if model_id == default_model:
+                default_index = i
+        
+        self.modelSelector.setCurrentIndex(default_index)
+        self.modelSelector.setToolTip("Select the AI model to use for code generation. Different models have different rate limits and capabilities.\nUpdate models in Resources/prompts_config.py")
         setupFormLayout.addRow("AI Model:", self.modelSelector)
         
         # --- Output Path Configuration ---
