@@ -315,18 +315,34 @@ Analyze the error and fix it.""",
     def processRequest(self, apiKey, userPrompt, scriptName=None, outputPath=None):
         try:
             from openai import OpenAI
-            # Use GitHub Models API (included with GitHub Copilot subscription)
-            client = OpenAI(
-                api_key=apiKey,
-                base_url="https://models.inference.ai.azure.com"
-            )
+            
+            # Get selected model
+            model_name = self.getModel()
+            
+            # Jetstream2 model endpoints (free, no API key required)
+            jetstream_endpoints = {
+                "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
+                "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
+                "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
+            }
+            
+            # Create appropriate client based on model
+            if model_name in jetstream_endpoints:
+                # Jetstream2 models - no API key needed, access from Jetstream2 network
+                client = OpenAI(
+                    api_key="empty",  # Jetstream2 doesn't require authentication from their network
+                    base_url=jetstream_endpoints[model_name]
+                )
+            else:
+                # GitHub Models API (included with GitHub Copilot subscription)
+                client = OpenAI(
+                    api_key=apiKey,
+                    base_url="https://models.inference.ai.azure.com"
+                )
         except ImportError:
             return {"success": False, "error": "OpenAI library not found. Please install it with: pip install openai"}
         except Exception as e:
-            return {"success": False, "error": f"Failed to initialize GitHub Models client: {str(e)}"}
-
-        if scriptName:
-            return self.createSimpleScript(client, userPrompt, scriptName, outputPath)
+            return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
         return {"success": False, "error": "No script name specified."}
 
 

@@ -240,6 +240,10 @@ AVAILABLE_MODELS = [
     ("Meta Llama 3.1 405B Instruct", "meta-llama-3.1-405b-instruct"),
     ("Mistral Large 2", "mistral-large-2"),
     ("Cohere Command R+", "cohere-command-r-plus"),
+    # Jetstream2 models (free, no API key required from Jetstream2 network)
+    ("DeepSeek R1 [Jetstream2] (Best Reasoning, 671B)", "DeepSeek-R1"),
+    ("gpt-oss-120b [Jetstream2] (Fast Reasoning)", "gpt-oss-120b"),
+    ("Llama 4 Scout [Jetstream2] (General + Vision)", "llama-4-scout"),
 ]
 
 # Default model (must be a model ID from AVAILABLE_MODELS)
