@@ -44,10 +44,10 @@ class DeveloperAgent(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Developer Agent"
-        self.parent.categories = ["Developer Tools"]
-        self.parent.dependencies = []  # No dependencies needed for script-only development
-        self.parent.contributors = ["AI Assistant"]
-        self.parent.helpText = "This module creates Python scripts for 3D Slicer."
+        self.parent.categories = ["SlicerMorph"]
+        self.parent.dependencies = ["ScriptEditor"]
+        self.parent.contributors = ["Murat Maga (SCRI)"]
+        self.parent.helpText = "This module creates Python scripts for 3D Slicer using LLM."
         self.parent.acknowledgementText = "This module was developed with the assistance of AI."
 
 #
