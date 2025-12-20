@@ -346,11 +346,144 @@ Analyze the error and fix it.""",
             return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
         return {"success": False, "error": "No script name specified."}
 
+    def processRequestToNode(self, apiKey, userPrompt, textNode, outputPath=None):
+        """Process request and write generated code directly to a text node"""
+        try:
+            from openai import OpenAI
+            
+            # Get selected model
+            model_name = self.getModel()
+            
+            # Jetstream2 model endpoints (free, no API key required)
+            jetstream_endpoints = {
+                "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
+                "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
+                "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
+            }
+            
+            # Create appropriate client based on model
+            if model_name in jetstream_endpoints:
+                client = OpenAI(
+                    api_key="empty",
+                    base_url=jetstream_endpoints[model_name]
+                )
+            else:
+                client = OpenAI(
+                    api_key=apiKey,
+                    base_url="https://models.inference.ai.azure.com"
+                )
+        except ImportError:
+            return {"success": False, "error": "OpenAI library not found. Please install it with: pip install openai"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
+        
+        if not textNode:
+            return {"success": False, "error": "No text node provided."}
+        
+        scriptName = textNode.GetName().replace('.py', '')
+        
+        # Generate code using AI
+        return self.createScriptToNode(client, userPrompt, textNode, scriptName, outputPath)
 
 
 
 
 
+
+
+    def createScriptToNode(self, client, userPrompt, textNode, scriptName, outputPath=None):
+        """Create a Python script and write it directly to a text node"""
+        import traceback
+        
+        max_debug_attempts = self.getDebugIterations()
+        current_code = None
+        error_history = ""
+        
+        for attempt in range(max_debug_attempts + 1):
+            try:
+                if attempt == 0:
+                    prompt_for_creation = (
+                        f"Create a complete Python script named '{scriptName}' that implements the following functionality: {userPrompt}. "
+                        f"The script should be designed to run in 3D Slicer's Python console. Use only modern, non-deprecated Slicer API calls. "
+                        f"Include proper error handling and user feedback using slicer.util functions. "
+                        f"Return ONLY the complete Python code without any explanation or markdown formatting.")
+                else:
+                    prompt_for_creation = (
+                        f"Debug and fix the Python script for 3D Slicer. The script should implement: {userPrompt}\\n"
+                        f"Use only modern, non-deprecated Slicer API calls. Current error (Debug Attempt {attempt}/{max_debug_attempts}):\\n{error_history}")
+
+                # Get script template for context
+                script_template = self.get_script_template(scriptName)
+                new_code = self.call_ai(client, prompt_for_creation, current_code or script_template, error_history, "script")
+                
+                if new_code is None:
+                    return {"success": False, "error": "AI API call failed. Check the conversation log for details."}
+
+                # Write the code to the text node
+                textNode.SetText(new_code)
+                current_code = new_code
+                
+                # Optionally save to file if output path provided
+                if outputPath:
+                    scripts_dir = os.path.join(outputPath, "Scripts")
+                    if not os.path.exists(scripts_dir):
+                        os.makedirs(scripts_dir)
+                    script_file_path = os.path.join(scripts_dir, f"{scriptName}.py")
+                    self.write_code(script_file_path, new_code)
+                    
+                    # Link storage node
+                    storageNode = textNode.GetStorageNode()
+                    if not storageNode:
+                        storageNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextStorageNode')
+                        textNode.SetAndObserveStorageNodeID(storageNode.GetID())
+                    storageNode.SetFileName(script_file_path)
+                
+                # Test the script
+                self.diagnostic_print(f"Attempt {attempt + 1}: Validating script syntax...")
+                try:
+                    compile(new_code, f"<{scriptName}>", 'exec')
+                except SyntaxError as e:
+                    raise RuntimeError(f"Syntax error in generated script: {str(e)}")
+
+                self.diagnostic_print(f"Attempt {attempt + 1}: Testing script execution...")
+                test_success, test_error = self.testScriptExecution(new_code, scriptName)
+                if not test_success:
+                    raise RuntimeError(f"Script execution test failed: {test_error}")
+                
+                # Execute in Slicer
+                self.diagnostic_print(f"Attempt {attempt + 1}: Executing script in Slicer...")
+                exec_success, exec_error = self.executeScriptInSlicer(new_code, scriptName)
+                if not exec_success:
+                    self.diagnostic_print(f"Script execution in Slicer failed: {exec_error}")
+                    raise RuntimeError(f"Script runtime execution failed: {exec_error}")
+                
+                # Success!
+                result_message = f"Script '{scriptName}' generated successfully"
+                if attempt > 0:
+                    result_message += f" after {attempt} debug attempts"
+                result_message += ". Code written to node and ready to execute."
+                
+                return {"success": True, "message": result_message}
+
+            except Exception as e:
+                error_msg = f"Error on attempt {attempt + 1}:\\n{str(e)}\\n{traceback.format_exc()}"
+                self.diagnostic_print(f"Script generation failed:\\n{error_msg}", error=True)
+                
+                formatted_error = f"""
+ATTEMPT {attempt + 1} FAILED:
+Error Type: {type(e).__name__}
+Error Message: {str(e)}
+
+Generated Code That Failed:
+{new_code if 'new_code' in locals() else 'No code generated'}
+
+Full Traceback:
+{traceback.format_exc()}
+"""
+                error_history = formatted_error
+                
+                if attempt == max_debug_attempts:
+                    return {"success": False, "error": f"Failed to create script after {max_debug_attempts} debug attempts. Final error: {str(e)}\\n\\nError History:\\n{error_history}"}
 
     def createSimpleScript(self, client, userPrompt, scriptName, outputPath=None):
         """Create a simple Python script that can be executed in Slicer's Python console"""
@@ -780,6 +913,14 @@ print("Script executed successfully!")
             generated_code = response.choices[0].message.content.strip()
             self.diagnostic_print(f"RECEIVED FROM AI - Code length: {len(generated_code)} chars")
             
+            # Strip <think> tags from DeepSeek-R1 responses
+            import re
+            # Remove everything between <think> and </think> tags (including the tags)
+            generated_code = re.sub(r'<think>.*?</think>', '', generated_code, flags=re.DOTALL)
+            # Also handle <Think> tags (case insensitive)
+            generated_code = re.sub(r'<Think>.*?</Think>', '', generated_code, flags=re.DOTALL|re.IGNORECASE)
+            generated_code = generated_code.strip()
+            
             # Clean up the response
             if generated_code.startswith("```python"):
                 # Extract code from markdown code block
@@ -920,10 +1061,10 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         
         # --- Debug Iterations Configuration ---
         self.debugIterationsSpinBox = qt.QSpinBox()
-        self.debugIterationsSpinBox.setMinimum(1)
+        self.debugIterationsSpinBox.setMinimum(0)
         self.debugIterationsSpinBox.setMaximum(10)
-        self.debugIterationsSpinBox.setValue(2)
-        self.debugIterationsSpinBox.setToolTip("Number of debug attempts when code generation fails (default: 2)")
+        self.debugIterationsSpinBox.setValue(0)
+        self.debugIterationsSpinBox.setToolTip("Number of debug attempts when code generation fails (default: 0)")
         setupFormLayout.addRow("Debug Iterations:", self.debugIterationsSpinBox)
         
         # --- Model Selection ---
@@ -966,57 +1107,480 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.addWidget(devCollapsibleButton)
         devFormLayout = qt.QFormLayout(devCollapsibleButton)
 
-        # --- Python Script Creation ---
-        devFormLayout.addRow(qt.QLabel("<b>Create a Python Script</b>"))
-        self.scriptNameLineEdit = qt.QLineEdit()
-        self.scriptNameLineEdit.setPlaceholderText("e.g., MyDataProcessor")
-        devFormLayout.addRow("Script Name:", self.scriptNameLineEdit)
-        
-        # Add info about Script Editor integration
-        script_editor_info = qt.QLabel("💡 Scripts will automatically open in Script Editor extension if available")
-        script_editor_info.setStyleSheet("color: #666; font-style: italic; font-size: 10px;")
-        script_editor_info.setWordWrap(True)
-        devFormLayout.addRow(script_editor_info)
-        
         # Add GitHub token help
-        github_token_info = qt.QLabel("🔑 GitHub Token: Go to github.com/settings/tokens → Generate new token (classic) → Select 'repo' scope (for GitHub models) or leave empty for DeepSeek-R1 via Jetstream2")
+        github_token_info = qt.QLabel("🔑 GitHub Token: Optional for DeepSeek-R1 (Jetstream2), required for GitHub models")
         github_token_info.setStyleSheet("color: #0366d6; font-size: 10px;")
         github_token_info.setWordWrap(True)
         devFormLayout.addRow(github_token_info)
         
-        # Script Editor quick-open button
-        debug_layout = qt.QHBoxLayout()
-        # New: Open the most recent generated script in Script Editor and auto-select it
-        self.openInScriptEditorButton = qt.QPushButton("Open in Script Editor")
-        self.openInScriptEditorButton.setToolTip("Switch to Script Editor and display the last generated script")
-        self.openInScriptEditorButton.clicked.connect(self.onOpenInScriptEditorClicked)
-
-        debug_layout.addWidget(self.openInScriptEditorButton)
-        devFormLayout.addRow(debug_layout)
-
-        # --- Conversation UI ---
+        # --- Conversation UI & Prompt (before editor) ---
         devFormLayout.addRow(qt.QLabel("<b>Conversation & Prompt</b>"))
+        
+        # Initialize conversation view first (needed for error messages)
         self.conversationView = qt.QTextBrowser()
-        self.conversationView.setMinimumHeight(300)
+        self.conversationView.setMinimumHeight(200)
         devFormLayout.addRow(self.conversationView)
         
-        # Check for required libraries and extensions (after conversationView is created)
+        # Check for required libraries and extensions
         self.checkForOpenAILibrary()
         self.checkForScriptEditor()
         
         self.promptTextEdit = qt.QTextEdit()
-        # --- Pre-populated Prompt ---
         self.promptTextEdit.setPlainText("Create a script that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd")
         self.promptTextEdit.setFixedHeight(100)
         devFormLayout.addRow(self.promptTextEdit)
-        self.sendButton = qt.QPushButton("🚀 Generate Python Script (DeepSeek-R1)")
+        
+        self.sendButton = qt.QPushButton("🚀 Generate Python Script")
         devFormLayout.addRow(self.sendButton)
+        
+        # --- Script Editor (after prompt) ---
+        devFormLayout.addRow(qt.QLabel("<b>Script Editor</b>"))
+        
+        # Create container for editor components
+        editorContainer = qt.QWidget()
+        editorLayout = qt.QVBoxLayout(editorContainer)
+        editorLayout.setContentsMargins(0, 0, 0, 0)
+        
+        # Add editor settings (theme and font size)
+        settingsLayout = qt.QHBoxLayout()
+        
+        # Theme selector
+        themeLabel = qt.QLabel("Theme:")
+        self.lightThemeRadio = qt.QRadioButton("Light")
+        self.darkThemeRadio = qt.QRadioButton("Dark")
+        self.lightThemeRadio.setChecked(True)  # Default to light theme
+        self.lightThemeRadio.toggled.connect(self.onThemeChanged)
+        self.darkThemeRadio.toggled.connect(self.onThemeChanged)
+        
+        # Font size slider
+        fontSizeLabel = qt.QLabel("Font Size:")
+        self.fontSizeSlider = qt.QSlider(qt.Qt.Horizontal)
+        self.fontSizeSlider.setMinimum(8)
+        self.fontSizeSlider.setMaximum(32)
+        self.fontSizeSlider.setValue(14)
+        self.fontSizeSlider.setTickPosition(qt.QSlider.TicksBelow)
+        self.fontSizeSlider.setTickInterval(4)
+        self.fontSizeSlider.setMaximumWidth(150)
+        self.fontSizeSlider.valueChanged.connect(self.onFontSizeChanged)
+        
+        self.fontSizeValueLabel = qt.QLabel("14")
+        self.fontSizeValueLabel.setMinimumWidth(25)
+        
+        settingsLayout.addWidget(themeLabel)
+        settingsLayout.addWidget(self.lightThemeRadio)
+        settingsLayout.addWidget(self.darkThemeRadio)
+        settingsLayout.addWidget(qt.QLabel("  |  "))
+        settingsLayout.addWidget(fontSizeLabel)
+        settingsLayout.addWidget(self.fontSizeSlider)
+        settingsLayout.addWidget(self.fontSizeValueLabel)
+        settingsLayout.addStretch()
+        
+        settingsWidget = qt.QWidget()
+        settingsWidget.setLayout(settingsLayout)
+        editorLayout.addWidget(settingsWidget)
+        
+        # Add node selector
+        nodeSelectorLayout = qt.QHBoxLayout()
+        nodeSelectorLabel = qt.QLabel("Script:")
+        self.scriptNodeSelector = slicer.qMRMLNodeComboBox()
+        self.scriptNodeSelector.nodeTypes = ["vtkMRMLTextNode"]
+        self.scriptNodeSelector.addAttribute("vtkMRMLTextNode", "mimetype", "text/x-python")
+        self.scriptNodeSelector.showChildNodeTypes = False
+        self.scriptNodeSelector.showHidden = False
+        self.scriptNodeSelector.selectNodeUponCreation = True
+        self.scriptNodeSelector.noneEnabled = True
+        self.scriptNodeSelector.removeEnabled = True
+        self.scriptNodeSelector.renameEnabled = True
+        self.scriptNodeSelector.addEnabled = True
+        self.scriptNodeSelector.baseName = "Script"
+        self.scriptNodeSelector.noneDisplay = "(Create New Python Script)"
+        self.scriptNodeSelector.setMRMLScene(slicer.mrmlScene)
+        self.scriptNodeSelector.setToolTip("Select or create a script node")
+        
+        nodeSelectorLayout.addWidget(nodeSelectorLabel)
+        nodeSelectorLayout.addWidget(self.scriptNodeSelector)
+        editorLayout.addLayout(nodeSelectorLayout)
+        
+        # Create Monaco editor using qSlicerWebWidget
+        self.codeEditor = slicer.qSlicerWebWidget()
+        self.codeEditor.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
+        self.codeEditor.setMinimumHeight(350)
+        
+        # Get the Monaco editor HTML path from Script Editor
+        try:
+            modulePath = os.path.dirname(slicer.modules.scripteditor.path)
+            editorHtmlPath = os.path.join(modulePath, 'Resources', 'monaco-editor', 'index.html')
+            
+            if os.path.exists(editorHtmlPath):
+                self.codeEditor.url = qt.QUrl.fromLocalFile(editorHtmlPath)
+                self.codeEditor.connect("evalResult(QString,QString)", self.onMonacoEvalResult)
+                editorLayout.addWidget(self.codeEditor)
+                print("✅ Monaco editor loaded successfully")
+                
+                # Setup Monaco editor features after a delay
+                qt.QTimer.singleShot(1000, self.setupMonacoFeatures)
+            else:
+                raise FileNotFoundError("Monaco editor HTML not found")
+        except Exception as e:
+            print(f"⚠️ Could not load Monaco editor: {e}")
+            # Fallback to simple text editor
+            self.codeEditor = qt.QTextEdit()
+            self.codeEditor.setMinimumHeight(350)
+            font = qt.QFont("Courier")
+            font.setStyleHint(qt.QFont.Monospace)
+            font.setFixedPitch(True)
+            font.setPointSize(10)
+            self.codeEditor.setFont(font)
+            editorLayout.addWidget(self.codeEditor)
+        
+        # Connect node selector to update editor
+        self.scriptNodeSelector.currentNodeChanged.connect(self.onScriptNodeChanged)
+        
+        # Add Execute button
+        executeButton = qt.QPushButton("▶ Execute Script")
+        executeButton.setToolTip("Execute the current script in Python console")
+        executeButton.clicked.connect(self.onExecuteScript)
+        editorLayout.addWidget(executeButton)
+        
+        editorContainer.setMinimumHeight(450)
+        devFormLayout.addRow(editorContainer)
 
         # Connections
         self.sendButton.clicked.connect(self.onSendPromptButtonClicked)
 
         self.layout.addStretch(1)
 
+    def setupMonacoFeatures(self):
+        """Setup Monaco editor features after it's loaded"""
+        # Set initial theme to light
+        self.setTheme("vs")
+        
+        # Set initial font size
+        self.setFontSize(14)
+        
+        # Setup context menu for sending code to Python console
+        self.setupContextMenu()
+        
+        # Setup change detection to save content back to node
+        self.setupChangeDetection()
+        
+        # Setup timer to check for selected code
+        self.contextMenuTimer = qt.QTimer()
+        self.contextMenuTimer.timeout.connect(self.checkForSelectedCode)
+        self.contextMenuTimer.start(400)
+        
+        # Disable editor until a node is selected
+        self.setEditorEnabled(False)
+    
+    def setupContextMenu(self):
+        """Setup Monaco editor context menu with 'Send to Python Console' option"""
+        contextMenuScript = """
+        (function() {
+            try {
+                if (!window.editor || typeof window.editor.addAction !== 'function') {
+                    console.log('Editor not ready, retrying in 1 second...');
+                    setTimeout(arguments.callee, 1000);
+                    return;
+                }
+                
+                window.getSelectedText = function() {
+                    try {
+                        if (window.editor && typeof window.editor.getSelection === 'function' && typeof window.editor.getModel === 'function') {
+                            var selection = window.editor.getSelection();
+                            if (selection && window.editor.getModel()) {
+                                return window.editor.getModel().getValueInRange(selection);
+                            }
+                        }
+                    } catch (e) {
+                        console.log('Error getting selected text:', e);
+                    }
+                    return '';
+                };
+                
+                window.editor.addAction({
+                    id: 'send-to-python-console',
+                    label: 'Send Selection to Python Console',
+                    contextMenuGroupId: 'navigation',
+                    contextMenuOrder: 1.5,
+                    keybindings: [
+                        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter
+                    ],
+                    run: function(editor) {
+                        try {
+                            if (editor && typeof editor.getSelection === 'function' && typeof editor.getModel === 'function') {
+                                var selection = editor.getSelection();
+                                var model = editor.getModel();
+                                if (selection && model) {
+                                    var selectedText = model.getValueInRange(selection);
+                                    if (selectedText) {
+                                        window.selectedCodeForExecution = selectedText;
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.log('Error in context menu action:', e);
+                        }
+                        return null;
+                    }
+                });
+                console.log('Context menu action registered successfully');
+            } catch (e) {
+                console.log('Error setting up context menu:', e);
+            }
+        })();
+        """
+        if hasattr(self.codeEditor, 'evalJS'):
+            self.codeEditor.evalJS(contextMenuScript)
+    
+    def setupChangeDetection(self):
+        """Setup Monaco editor to detect content changes and save to node"""
+        changeDetectionScript = """
+        (function() {
+            try {
+                if (!window.editor || typeof window.editor.onDidChangeModelContent !== 'function') {
+                    console.log('Editor not ready for change detection, retrying in 1 second...');
+                    setTimeout(arguments.callee, 1000);
+                    return;
+                }
+                
+                window.editor.onDidChangeModelContent(function(e) {
+                    try {
+                        if (window.changeTimeout) {
+                            clearTimeout(window.changeTimeout);
+                        }
+                        window.changeTimeout = setTimeout(function() {
+                            try {
+                                window.contentChanged = true;
+                                if (window.editor && typeof window.editor.getModel === 'function' && window.editor.getModel()) {
+                                    var content = window.editor.getModel().getValue();
+                                    window.currentEditorContent = content;
+                                }
+                            } catch (e) {
+                                console.log('Error in change timeout:', e);
+                            }
+                        }, 1000);
+                    } catch (e) {
+                        console.log('Error in change detection callback:', e);
+                    }
+                });
+                
+                console.log('Change detection initialized');
+            } catch (e) {
+                console.log('Error setting up change detection:', e);
+            }
+        })();
+        """
+        if hasattr(self.codeEditor, 'evalJS'):
+            self.codeEditor.evalJS(changeDetectionScript)
+            
+            # Setup timer to check for content changes
+            self.changeCheckTimer = qt.QTimer()
+            self.changeCheckTimer.timeout.connect(self.checkForContentChanges)
+            self.changeCheckTimer.start(1000)
+    
+    def checkForContentChanges(self):
+        """Check if Monaco content has changed and save to node"""
+        if hasattr(self.codeEditor, 'evalJS'):
+            self.codeEditor.evalJS("window.contentChanged || false")
+    
+    def onMonacoEvalResult(self, request, result):
+        """Handle results from Monaco editor JavaScript evaluation"""
+        # Check if this is selected code from context menu
+        if request == "window.selectedCodeForExecution || ''":
+            if result and result.strip():
+                self.executeInPythonConsole(result)
+        # Check if this is content change detection
+        elif request == "window.contentChanged || false":
+            if result == "true":
+                # Content has changed - get the current content
+                if hasattr(self.codeEditor, 'evalJS'):
+                    self.codeEditor.evalJS("window.currentEditorContent || ''")
+        elif request == "window.currentEditorContent || ''":
+            # This is the actual content - save it to the node
+            node = self.scriptNodeSelector.currentNode()
+            if node and result:
+                node.SetText(result)
+                # Reset the flags
+                if hasattr(self.codeEditor, 'evalJS'):
+                    self.codeEditor.evalJS("window.contentChanged = false; window.currentEditorContent = null;")
+    
+    def checkForSelectedCode(self):
+        """Check if there's selected code to execute from the context menu"""
+        if hasattr(self.codeEditor, 'evalJS'):
+            self.codeEditor.evalJS("window.selectedCodeForExecution || ''")
+    
+    def executeInPythonConsole(self, code):
+        """Execute selected code directly in Python console"""
+        try:
+            if code and code.strip():
+                # Print the code being executed
+                print("Executing:")
+                print(code)
+                print("-" * 40)
+                
+                exec(code, {'slicer': slicer, 'logging': logging, '__name__': '__main__'})
+                
+                # Clear the flag
+                if hasattr(self.codeEditor, 'evalJS'):
+                    self.codeEditor.evalJS("window.selectedCodeForExecution = null;")
+        except Exception as e:
+            import traceback
+            error_msg = f"Error executing code:\n{str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+    
+    def onThemeChanged(self):
+        """Handle theme radio button changes"""
+        if self.lightThemeRadio.isChecked():
+            self.setTheme("vs")
+        else:
+            self.setTheme("vs-dark")
+    
+    def onFontSizeChanged(self, value):
+        """Handle font size slider changes"""
+        self.fontSizeValueLabel.setText(str(value))
+        self.setFontSize(value)
+    
+    def setTheme(self, themeName):
+        """Set the Monaco editor theme"""
+        if hasattr(self.codeEditor, 'evalJS'):
+            themeScript = f"""
+            (function() {{
+                try {{
+                    if (window.monaco && window.monaco.editor && typeof window.monaco.editor.setTheme === 'function') {{
+                        monaco.editor.setTheme('{themeName}');
+                        console.log('Theme set to: {themeName}');
+                    }} else {{
+                        console.log('Editor not ready for theme change');
+                    }}
+                }} catch (e) {{
+                    console.log('Error setting theme:', e);
+                }}
+            }})();
+            """
+            self.codeEditor.evalJS(themeScript)
+    
+    def setFontSize(self, size):
+        """Set the Monaco editor font size"""
+        if hasattr(self.codeEditor, 'evalJS'):
+            fontSizeScript = f"""
+            (function() {{
+                try {{
+                    if (window.monaco && window.editor && typeof window.editor.updateOptions === 'function') {{
+                        window.editor.updateOptions({{ fontSize: {size} }});
+                        console.log('Font size set to: {size}px');
+                    }} else {{
+                        console.log('Editor not ready for font size change');
+                    }}
+                }} catch (e) {{
+                    console.log('Error setting font size:', e);
+                }}
+            }})();
+            """
+            self.codeEditor.evalJS(fontSizeScript)
+    
+    def onExecuteScript(self):
+        """Execute the current script in Python console"""
+        try:
+            node = self.scriptNodeSelector.currentNode()
+            if not node:
+                slicer.util.warningDisplay("No script node selected")
+                return
+            
+            code = node.GetText()
+            if not code or not code.strip():
+                slicer.util.warningDisplay("Script is empty")
+                return
+            
+            # Execute in Python console
+            exec(code, {'slicer': slicer, 'logging': logging, '__name__': '__main__'})
+            print(f"✅ Executed: {node.GetName()}")
+        except Exception as e:
+            import traceback
+            error_msg = f"Error executing script:\n{str(e)}\n{traceback.format_exc()}"
+            slicer.util.errorDisplay(error_msg)
+            print(error_msg)
+    
+    def onScriptNodeChanged(self, node):
+        """Called when the script node selector changes"""
+        if node:
+            # Enable editor when node is selected
+            self.setEditorEnabled(True)
+            
+            # For Monaco editor (qSlicerWebWidget), use JavaScript to set content
+            if hasattr(self.codeEditor, 'evalJS'):
+                # Monaco editor - set content via JavaScript
+                text = node.GetText() if node.GetText() else ""
+                import json
+                escaped_text = json.dumps(text)
+                # Use the same approach as Script Editor
+                self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+            elif hasattr(self.codeEditor, 'setPlainText'):
+                # QTextEdit fallback
+                text = node.GetText() if node.GetText() else ""
+                try:
+                    self.codeEditor.textChanged.disconnect()
+                except:
+                    pass
+                self.codeEditor.setPlainText(text)
+                self.codeEditor.textChanged.connect(lambda: self.onCodeEdited(node))
+        else:
+            # Disable editor when no node is selected
+            self.setEditorEnabled(False)
+            # Clear editor content
+            if hasattr(self.codeEditor, 'evalJS'):
+                self.codeEditor.evalJS('if (window.editor && window.editor.getModel) { window.editor.getModel().setValue(""); }')
+            elif hasattr(self.codeEditor, 'setPlainText'):
+                self.codeEditor.setPlainText("")
+    
+    def onCodeEdited(self, node):
+        """Save edited code back to the node (for QTextEdit fallback)"""
+        if node and hasattr(self.codeEditor, 'toPlainText'):
+            node.SetText(self.codeEditor.toPlainText())
+    
+    def setEditorEnabled(self, enabled):
+        """Enable or disable the Monaco editor"""
+        if hasattr(self.codeEditor, 'evalJS'):
+            # For Monaco editor, use JavaScript to enable/disable
+            if enabled:
+                self.codeEditor.evalJS('if (window.editor) { window.editor.updateOptions({ readOnly: false }); }')
+            else:
+                self.codeEditor.evalJS('if (window.editor) { window.editor.updateOptions({ readOnly: true }); }')
+        elif hasattr(self.codeEditor, 'setEnabled'):
+            # For QTextEdit fallback
+            self.codeEditor.setEnabled(enabled)
+    
+    def updateEditorContent(self, node):
+        """Update Monaco editor to display the node's content"""
+        if node and hasattr(self.codeEditor, 'evalJS'):
+            text = node.GetText() if node.GetText() else ""
+            import json
+            escaped_text = json.dumps(text)
+            self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+    
+    def getCurrentScriptNode(self):
+        """Get current script node from embedded editor, or create new one"""
+        try:
+            # Get from node selector
+            node = self.scriptNodeSelector.currentNode()
+            if node:
+                return node
+            
+            # Create new node if none selected
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTextNode')
+            node.SetName(f"AIScript_{timestamp}.py")
+            node.SetAttribute("mimetype", "text/x-python")
+            node.SetText("# AI generated script\n")
+            
+            # Set as current in selector
+            self.scriptNodeSelector.setCurrentNode(node)
+            
+            return node
+        except Exception as e:
+            self.conversationView.append(f"Error getting script node: {e}")
+            return None
+    
     def appendToConversationView(self, message):
         """Append a message to the conversation view"""
         self.conversationView.append(f"<pre>{message}</pre>")
@@ -1041,37 +1605,6 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onDebugScriptEditor(self):
         """Debug Script Editor widget structure"""
         self.logic.debugScriptEditor()
-    
-    def onOpenInScriptEditorClicked(self):
-        """Open the last generated script in Script Editor and auto-select its node."""
-        try:
-            # Prefer the exact last node created/updated
-            nodeId = getattr(self.logic, 'lastScriptNodeID', None)
-            filePath = getattr(self.logic, 'lastScriptFilePath', None)
-
-            if nodeId:
-                self.logic.focusScriptInScriptEditor(nodeId)
-                return
-
-            # If we only know the file path, ensure it is in the scene and focus it
-            if filePath and os.path.exists(filePath):
-                node, _ = self.logic.loadScriptIntoScene(filePath)
-                if node:
-                    self.logic.lastScriptNodeID = node.GetID()
-                    self.logic.lastScriptFilePath = filePath
-                    self.logic.focusScriptInScriptEditor(node)
-                    return
-
-            # Fallback: choose any Python text node if available
-            pyNodes = [n for n in slicer.util.getNodesByClass('vtkMRMLTextNode') if n.GetAttribute('mimetype') == 'text/x-python']
-            if pyNodes:
-                self.logic.focusScriptInScriptEditor(pyNodes[0])
-                return
-
-            slicer.util.warningDisplay("No generated script available to open. Please create a script first.")
-        except Exception as e:
-            slicer.util.warningDisplay(f"Could not open Script Editor: {e}")
-
 
     def checkForOpenAILibrary(self):
         """Check if the openai library is installed (needed for GitHub Models API)"""
@@ -1170,7 +1703,6 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onSendPromptButtonClicked(self):
         apiKey = self.apiKeyLineEdit.text.strip()
         userPrompt = self.promptTextEdit.toPlainText().strip()
-        scriptName = self.scriptNameLineEdit.text.strip()
         outputPath = self.outputPathLineEdit.text.strip()
 
         # Check if API key is needed based on selected model
@@ -1183,12 +1715,17 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not userPrompt:
             slicer.util.warningDisplay("Please enter a development prompt.")
             return
-        if not scriptName:
-            slicer.util.warningDisplay("Please enter a 'Script Name'.")
-            return
         if not outputPath:
             slicer.util.warningDisplay("Please specify an output directory.")
             return
+        
+        # Get or create text node from embedded editor
+        currentNode = self.getCurrentScriptNode()
+        if not currentNode:
+            slicer.util.warningDisplay("Could not get or create script node.")
+            return
+        
+        scriptName = currentNode.GetName().replace('.py', '')
         
         # Validate that the output path is accessible
         try:
@@ -1208,7 +1745,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic.setModel(self.modelSelector.currentData)
         
         display_target = scriptName
-        action_type = "Creating Script"
+        action_type = "Generating Script"
             
         self.conversationView.append(f"<h2>New Request</h2><b>{action_type}:</b> {display_target}<br>"
                                      f"<b>Prompt:</b> {userPrompt}<br>"
@@ -1216,9 +1753,10 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         slicer.app.processEvents()
 
         try:
-            result = self.logic.processRequest(apiKey, userPrompt, scriptName, outputPath)
+            result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath)
             if result['success']:
                 self.conversationView.append(f"✅ <b>Success!</b><br>{result['message']}<hr>")
+                # Code is already in the node and editor should show it automatically
             else:
                 self.conversationView.append(f"❌ <b>Failed.</b><br>"
                                              f"<b>Final Error:</b><br><pre>{result['error']}</pre><hr>")
