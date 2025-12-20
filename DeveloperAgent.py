@@ -1176,6 +1176,28 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         editorLayout = qt.QVBoxLayout(editorContainer)
         editorLayout.setContentsMargins(0, 0, 0, 0)
         
+        # Add node selector at the top
+        nodeSelectorLayout = qt.QHBoxLayout()
+        nodeSelectorLabel = qt.QLabel("Script:")
+        self.scriptNodeSelector = slicer.qMRMLNodeComboBox()
+        self.scriptNodeSelector.nodeTypes = ["vtkMRMLTextNode"]
+        self.scriptNodeSelector.addAttribute("vtkMRMLTextNode", "mimetype", "text/x-python")
+        self.scriptNodeSelector.showChildNodeTypes = False
+        self.scriptNodeSelector.showHidden = False
+        self.scriptNodeSelector.selectNodeUponCreation = True
+        self.scriptNodeSelector.noneEnabled = True
+        self.scriptNodeSelector.removeEnabled = True
+        self.scriptNodeSelector.renameEnabled = True
+        self.scriptNodeSelector.addEnabled = True
+        self.scriptNodeSelector.baseName = "Script"
+        self.scriptNodeSelector.noneDisplay = "(Create New Python Script)"
+        self.scriptNodeSelector.setMRMLScene(slicer.mrmlScene)
+        self.scriptNodeSelector.setToolTip("Select or create a script node")
+        
+        nodeSelectorLayout.addWidget(nodeSelectorLabel)
+        nodeSelectorLayout.addWidget(self.scriptNodeSelector)
+        editorLayout.addLayout(nodeSelectorLayout)
+        
         # Add editor settings (theme and font size)
         settingsLayout = qt.QHBoxLayout()
         
@@ -1213,28 +1235,6 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         settingsWidget = qt.QWidget()
         settingsWidget.setLayout(settingsLayout)
         editorLayout.addWidget(settingsWidget)
-        
-        # Add node selector
-        nodeSelectorLayout = qt.QHBoxLayout()
-        nodeSelectorLabel = qt.QLabel("Script:")
-        self.scriptNodeSelector = slicer.qMRMLNodeComboBox()
-        self.scriptNodeSelector.nodeTypes = ["vtkMRMLTextNode"]
-        self.scriptNodeSelector.addAttribute("vtkMRMLTextNode", "mimetype", "text/x-python")
-        self.scriptNodeSelector.showChildNodeTypes = False
-        self.scriptNodeSelector.showHidden = False
-        self.scriptNodeSelector.selectNodeUponCreation = True
-        self.scriptNodeSelector.noneEnabled = True
-        self.scriptNodeSelector.removeEnabled = True
-        self.scriptNodeSelector.renameEnabled = True
-        self.scriptNodeSelector.addEnabled = True
-        self.scriptNodeSelector.baseName = "Script"
-        self.scriptNodeSelector.noneDisplay = "(Create New Python Script)"
-        self.scriptNodeSelector.setMRMLScene(slicer.mrmlScene)
-        self.scriptNodeSelector.setToolTip("Select or create a script node")
-        
-        nodeSelectorLayout.addWidget(nodeSelectorLabel)
-        nodeSelectorLayout.addWidget(self.scriptNodeSelector)
-        editorLayout.addLayout(nodeSelectorLayout)
         
         # LAZY INITIALIZATION: Don't create Monaco editor during setup to avoid conflicts
         # It will be created on first enter() when user actually visits the module
