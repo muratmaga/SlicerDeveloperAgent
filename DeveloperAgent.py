@@ -352,7 +352,7 @@ Analyze the error and fix it.""",
             return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
         return {"success": False, "error": "No script name specified."}
 
-    def processRequestToNode(self, apiKey, userPrompt, textNode, outputPath=None):
+    def processRequestToNode(self, apiKey, userPrompt, textNode, outputPath=None, existingCode=None):
         """Process request and write generated code directly to a text node"""
         try:
             from openai import OpenAI
@@ -389,7 +389,7 @@ Analyze the error and fix it.""",
         scriptName = textNode.GetName().replace('.py', '')
         
         # Generate code using AI
-        return self.createScriptToNode(client, userPrompt, textNode, scriptName, outputPath)
+        return self.createScriptToNode(client, userPrompt, textNode, scriptName, outputPath, existingCode)
 
 
 
@@ -397,29 +397,39 @@ Analyze the error and fix it.""",
 
 
 
-    def createScriptToNode(self, client, userPrompt, textNode, scriptName, outputPath=None):
+    def createScriptToNode(self, client, userPrompt, textNode, scriptName, outputPath=None, existingCode=None):
         """Create a Python script and write it directly to a text node"""
         import traceback
         
         max_debug_attempts = self.getDebugIterations()
-        current_code = None
+        current_code = existingCode  # Start with existing code if provided
         error_history = ""
         
         for attempt in range(max_debug_attempts + 1):
             try:
                 if attempt == 0:
-                    prompt_for_creation = (
-                        f"Create a complete Python script named '{scriptName}' that implements the following functionality: {userPrompt}. "
-                        f"The script should be designed to run in 3D Slicer's Python console. Use only modern, non-deprecated Slicer API calls. "
-                        f"Include proper error handling and user feedback using slicer.util functions. "
-                        f"Return ONLY the complete Python code without any explanation or markdown formatting.")
+                    if existingCode:
+                        # Improvement/fix mode
+                        prompt_for_creation = (
+                            f"Improve or fix the following Python script for 3D Slicer based on this feedback: {userPrompt}\\n"
+                            f"The script should continue to be compatible with 3D Slicer's Python console. "
+                            f"Use only modern, non-deprecated Slicer API calls. "
+                            f"Include proper error handling and user feedback using slicer.util functions. "
+                            f"Return ONLY the complete improved Python code without any explanation or markdown formatting.")
+                    else:
+                        # New script generation mode
+                        prompt_for_creation = (
+                            f"Create a complete Python script named '{scriptName}' that implements the following functionality: {userPrompt}. "
+                            f"The script should be designed to run in 3D Slicer's Python console. Use only modern, non-deprecated Slicer API calls. "
+                            f"Include proper error handling and user feedback using slicer.util functions. "
+                            f"Return ONLY the complete Python code without any explanation or markdown formatting.")
                 else:
                     prompt_for_creation = (
                         f"Debug and fix the Python script for 3D Slicer. The script should implement: {userPrompt}\\n"
                         f"Use only modern, non-deprecated Slicer API calls. Current error (Debug Attempt {attempt}/{max_debug_attempts}):\\n{error_history}")
 
-                # Get script template for context
-                script_template = self.get_script_template(scriptName)
+                # Get script template for context (only if no existing code)
+                script_template = existingCode or self.get_script_template(scriptName)
                 new_code = self.call_ai(client, prompt_for_creation, current_code or script_template, error_history, "script")
                 
                 if new_code is None:
@@ -1054,6 +1064,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode = None
         self._currentObservedNode = None
         self._nodeModifiedTag = None
+        self._isSyncing = False
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -1137,11 +1148,24 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.checkForScriptEditor()
         
         self.promptTextEdit = qt.QTextEdit()
-        self.promptTextEdit.setPlainText("Create a script that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd")
+        self.promptTextEdit.setPlaceholderText("Describe what you want the script to do, or provide feedback about the current code...")
         self.promptTextEdit.setFixedHeight(100)
         devFormLayout.addRow(self.promptTextEdit)
         
-        self.sendButton = qt.QPushButton("🚀 Generate Python Script")
+        # Add checkbox to include current code as context
+        self.includeCurrentCodeCheckbox = qt.QCheckBox("Include current code as context (for improvements/fixes)")
+        self.includeCurrentCodeCheckbox.setChecked(False)
+        self.includeCurrentCodeCheckbox.setToolTip(
+            "When checked, sends the current editor code to AI for improvement/debugging.\n"
+            "Use this to:\n"
+            "  • Fix errors in generated code\n"
+            "  • Add features to existing scripts\n"
+            "  • Refine or optimize current implementation\n\n"
+            "When unchecked, AI generates new code from scratch."
+        )
+        devFormLayout.addRow(self.includeCurrentCodeCheckbox)
+        
+        self.sendButton = qt.QPushButton("🚀 Send to Agent")
         devFormLayout.addRow(self.sendButton)
         
         # --- Script Editor (after prompt) ---
@@ -1230,12 +1254,6 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # DON'T connect node selector here - it will interfere with other modules
         # Connection will be made on first enter() to avoid premature observer setup
         self._nodeSelectorConnected = False
-        
-        # Add Execute button
-        executeButton = qt.QPushButton("▶ Execute Script")
-        executeButton.setToolTip("Execute the current script in Python console")
-        executeButton.clicked.connect(self.onExecuteScript)
-        editorLayout.addWidget(executeButton)
         
         editorContainer.setMinimumHeight(450)
         devFormLayout.addRow(editorContainer)
@@ -1513,6 +1531,9 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Check if this is selected code from context menu
         if request == "window.selectedCodeForExecution || ''":
             if result and result.strip():
+                # Clear the flag FIRST to prevent re-execution
+                if hasattr(self.codeEditor, 'evalJS'):
+                    self.codeEditor.evalJS("window.selectedCodeForExecution = null;")
                 self.executeInPythonConsole(result)
         # Check if this is content change detection
         elif request == "window.contentChanged || false":
@@ -1524,7 +1545,9 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             # This is the actual content - save it to the node
             node = self.scriptNodeSelector.currentNode()
             if node and result:
+                self._isSyncing = True
                 node.SetText(result)
+                self._isSyncing = False
                 # Reset the flags
                 if hasattr(self.codeEditor, 'evalJS'):
                     self.codeEditor.evalJS("window.contentChanged = false; window.currentEditorContent = null;")
@@ -1544,10 +1567,6 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 print("-" * 40)
                 
                 exec(code, {'slicer': slicer, 'logging': logging, '__name__': '__main__'})
-                
-                # Clear the flag
-                if hasattr(self.codeEditor, 'evalJS'):
-                    self.codeEditor.evalJS("window.selectedCodeForExecution = null;")
         except Exception as e:
             import traceback
             error_msg = f"Error executing code:\n{str(e)}\n{traceback.format_exc()}"
@@ -1657,14 +1676,22 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     
     def onNodeContentModified(self, caller, event):
         """Called when the text node content is modified"""
+        if self._isSyncing:
+            return  # Skip if we're already syncing to prevent circular updates
+        
         node = caller
         if node and hasattr(self.codeEditor, 'evalJS'):
+            self._isSyncing = True
             text = node.GetText() if node.GetText() else ""
             import json
             escaped_text = json.dumps(text)
-            self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+            # Temporarily disable change detection while updating
+            self.codeEditor.evalJS(f'window.contentChanged = false; if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+            self._isSyncing = False
         elif node and hasattr(self.codeEditor, 'setPlainText'):
+            self._isSyncing = True
             self.codeEditor.setPlainText(node.GetText() if node.GetText() else "")
+            self._isSyncing = False
     
     def onCodeEdited(self, node):
         """Save edited code back to the node (for QTextEdit fallback)"""
@@ -1898,6 +1925,14 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.warningDisplay("Could not get or create script node.")
             return
         
+        # Get current code if checkbox is checked
+        currentCode = None
+        if self.includeCurrentCodeCheckbox.isChecked():
+            currentCode = currentNode.GetText() if currentNode.GetText() else ""
+            if not currentCode.strip():
+                self.conversationView.append("<i>⚠️ 'Include current code' is checked but editor is empty. Generating new code instead.</i><br>")
+                currentCode = None
+        
         scriptName = currentNode.GetName().replace('.py', '')
         
         # Validate that the output path is accessible
@@ -1918,15 +1953,16 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic.setModel(self.modelSelector.currentData)
         
         display_target = scriptName
-        action_type = "Generating Script"
+        mode = "Improving Existing Code" if currentCode else "Generating New Script"
             
-        self.conversationView.append(f"<h2>New Request</h2><b>{action_type}:</b> {display_target}<br>"
-                                     f"<b>Prompt:</b> {userPrompt}<br>"
+        self.conversationView.append(f"<h2>New Request</h2><b>Mode:</b> {mode}<br>"
+                                     f"<b>Script:</b> {display_target}<br>"
+                                     f"<b>Request:</b> {userPrompt}<br>"
                                      f"<i>Processing, please wait...</i><hr>")
         slicer.app.processEvents()
 
         try:
-            result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath)
+            result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath, currentCode)
             
             # ALWAYS update the editor to show generated code (even if execution failed)
             self.forceEditorUpdate(currentNode)
