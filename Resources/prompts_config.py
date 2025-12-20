@@ -188,6 +188,7 @@ MANDATORY ERROR ANALYSIS - Complete BEFORE writing new code:
    → ROOT CAUSE: Invalid file path or URL
    → FIX: Verify URL is correct and accessible, or use os.path.exists() check
    
+   IF ERROR: "'vtkSlicerVolumeRenderingLogic' object has no attribute 'ApplyPreset'" or similar\n   → ROOT CAUSE: Preset must be applied to VolumePropertyNode, not displayNode\n   → FIX: preset = volRenLogic.GetPresetByName("PresetName"); preset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n   \n   
    IF ERROR: Layout or rendering issues
    → ROOT CAUSE: Wrong layout constant or missing view update
    → FIX: Use slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView and slicer.util.resetThreeDViews()

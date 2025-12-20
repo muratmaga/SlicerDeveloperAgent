@@ -308,15 +308,13 @@ Analyze the error and fix it.""",
         """Print diagnostic message to both log and UI"""
         timestamp = datetime.now().strftime('%H:%M:%S')
         formatted_msg = f"[{timestamp}] {'❌ ' if error else ''}" + message
-        print(formatted_msg)  # Console output
-        logging.info(formatted_msg)  # Log file
+        print(formatted_msg)
+        logging.info(formatted_msg)
         if self._outputCallback:
-            self._outputCallback(formatted_msg)  # UI output
-        slicer.app.processEvents()
+            self._outputCallback(formatted_msg)
     
     def _notifyNodeContentChanged(self, textNode):
-        """Notify that a text node's content has changed to update UI displays"""
-        # Trigger a Modified event to update any observers (like Monaco editor)
+        """Notify that a text node's content has changed - must be called from main thread"""
         textNode.Modified()
 
     def processRequest(self, apiKey, userPrompt, scriptName=None, outputPath=None):
@@ -444,11 +442,11 @@ Analyze the error and fix it.""",
                 if new_code is None:
                     return {"success": False, "error": "AI API call failed. Check the conversation log for details."}
 
-                # ALWAYS write the code to the text node first (so it shows in editor even if execution fails)
-                textNode.SetText(new_code)
+                # Store the generated code
                 current_code = new_code
                 
-                # Trigger editor update - this ensures Monaco editor displays the generated code
+                # Update MRML nodes directly
+                textNode.SetText(new_code)
                 self._notifyNodeContentChanged(textNode)
                 
                 # Optionally save to file if output path provided
@@ -466,7 +464,7 @@ Analyze the error and fix it.""",
                         textNode.SetAndObserveStorageNodeID(storageNode.GetID())
                     storageNode.SetFileName(script_file_path)
                 
-                # Test the script
+                # Test the script (safe - no MRML operations)
                 try:
                     compile(new_code, f"<{scriptName}>", 'exec')
                 except SyntaxError as e:
@@ -1575,7 +1573,16 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 print(code)
                 print("-" * 40)
                 
-                exec(code, {'slicer': slicer, 'logging': logging, '__name__': '__main__'})
+                # Execute in the Python console's interactiveConsole namespace
+                # This ensures variables persist in the console
+                console = slicer.app.pythonConsole()
+                if console and hasattr(console, 'interactiveConsole'):
+                    # Use runcode which properly handles multi-line statements
+                    console.interactiveConsole().runcode(compile(code, '<console>', 'exec'))
+                else:
+                    # Fallback: execute in main module's globals so variables persist
+                    import __main__
+                    exec(code, __main__.__dict__)
         except Exception as e:
             import traceback
             error_msg = f"Error executing code:\n{str(e)}\n{traceback.format_exc()}"
@@ -1970,6 +1977,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                      f"<i>Processing, please wait...</i><hr>")
         slicer.app.processEvents()
 
+        # Process the request
         try:
             result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath, currentCode)
             
@@ -1983,9 +1991,12 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                              f"<b>Final Error:</b><br><pre>{result['error']}</pre><hr>")
                 self.conversationView.append(f"<b>ℹ️ Generated code has been loaded in the editor above for manual review and debugging.</b><hr>")
         except Exception as e:
+            self.forceEditorUpdate(currentNode)
             self.conversationView.append(f"❌ <b>An unexpected error occurred:</b><br><pre>{e}</pre><hr>")
             logging.error(f"DeveloperAgent unexpected error: {e}", exc_info=True)
+        finally:
+            self.sendButton.enabled = True
 
-        self.promptTextEdit.clear()
+    def cleanup(self):
+        """Clean up resources when module is closed"""
         self.sendButton.enabled = True
-        self.conversationView.verticalScrollBar().setValue(self.conversationView.verticalScrollBar().maximum)
