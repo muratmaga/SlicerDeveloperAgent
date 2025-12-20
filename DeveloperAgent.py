@@ -411,22 +411,31 @@ Analyze the error and fix it.""",
                     if existingCode:
                         # Improvement/fix mode
                         prompt_for_creation = (
-                            f"Improve or fix the following Python script for 3D Slicer based on this feedback: {userPrompt}\\n"
-                            f"The script should continue to be compatible with 3D Slicer's Python console. "
+                            f"TASK: {userPrompt}\\n\\n"
+                            f"⚠️ CRITICAL INSTRUCTIONS - READ CAREFULLY:\\n"
+                            f"1. The provided code is WORKING except for the specific issue mentioned above\\n"
+                            f"2. You MUST preserve ALL existing lines EXACTLY as they are\\n"
+                            f"3. ONLY modify the specific line(s) mentioned in the user's feedback\\n"
+                            f"4. DO NOT rewrite, reorganize, or 'improve' any working code\\n"
+                            f"5. DO NOT add print statements unless they existed in the original\\n"
+                            f"6. DO NOT add comments unless they existed in the original\\n"
+                            f"7. Return the COMPLETE code with only the minimal necessary changes\\n\\n"
                             f"Use only modern, non-deprecated Slicer API calls. "
-                            f"Include proper error handling and user feedback using slicer.util functions. "
-                            f"Return ONLY the complete improved Python code without any explanation or markdown formatting.")
+                            f"Return ONLY the complete Python code without any explanation or markdown formatting.")
                     else:
                         # New script generation mode
                         prompt_for_creation = (
                             f"Create a complete Python script named '{scriptName}' that implements the following functionality: {userPrompt}. "
                             f"The script should be designed to run in 3D Slicer's Python console. Use only modern, non-deprecated Slicer API calls. "
-                            f"Include proper error handling and user feedback using slicer.util functions. "
+                            f"DO NOT add print statements for progress tracking - only for essential user feedback. "
+                            f"Use comments (# ...) sparingly for complex logic only. "
                             f"Return ONLY the complete Python code without any explanation or markdown formatting.")
                 else:
                     prompt_for_creation = (
                         f"Debug and fix the Python script for 3D Slicer. The script should implement: {userPrompt}\\n"
-                        f"Use only modern, non-deprecated Slicer API calls. Current error (Debug Attempt {attempt}/{max_debug_attempts}):\\n{error_history}")
+                        f"Use only modern, non-deprecated Slicer API calls. "
+                        f"DO NOT add unnecessary print statements or comments. "
+                        f"Current error (Debug Attempt {attempt}/{max_debug_attempts}):\\n{error_history}")
 
                 # Get script template for context (only if no existing code)
                 script_template = existingCode or self.get_script_template(scriptName)
@@ -458,22 +467,20 @@ Analyze the error and fix it.""",
                     storageNode.SetFileName(script_file_path)
                 
                 # Test the script
-                self.diagnostic_print(f"Attempt {attempt + 1}: Validating script syntax...")
                 try:
                     compile(new_code, f"<{scriptName}>", 'exec')
                 except SyntaxError as e:
                     raise RuntimeError(f"Syntax error in generated script: {str(e)}")
 
-                self.diagnostic_print(f"Attempt {attempt + 1}: Testing script execution...")
                 test_success, test_error = self.testScriptExecution(new_code, scriptName)
                 if not test_success:
                     raise RuntimeError(f"Script execution test failed: {test_error}")
                 
                 # Execute in Slicer
-                self.diagnostic_print(f"Attempt {attempt + 1}: Executing script in Slicer...")
                 exec_success, exec_error = self.executeScriptInSlicer(new_code, scriptName)
                 if not exec_success:
-                    self.diagnostic_print(f"Script execution in Slicer failed: {exec_error}")
+                    if attempt == 0:
+                        self.diagnostic_print(f"Initial attempt failed, debugging...")
                     raise RuntimeError(f"Script runtime execution failed: {exec_error}")
                 
                 # Success!
@@ -485,8 +492,10 @@ Analyze the error and fix it.""",
                 return {"success": True, "message": result_message}
 
             except Exception as e:
-                error_msg = f"Error on attempt {attempt + 1}:\\n{str(e)}\\n{traceback.format_exc()}"
-                self.diagnostic_print(f"Script generation failed:\\n{error_msg}", error=True)
+                error_msg = f"Error on attempt {attempt + 1}:\\n{str(e)}"
+                if attempt == max_debug_attempts:
+                    # Only show detailed error on final attempt
+                    self.diagnostic_print(f"❌ Script generation failed:\\n{error_msg}", error=True)
                 
                 formatted_error = f"""
 ATTEMPT {attempt + 1} FAILED:
