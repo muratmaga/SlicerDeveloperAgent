@@ -89,7 +89,7 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
                 'error_section': slicer_prompts.ERROR_ANALYSIS_SECTION,
                 'ai_params': slicer_prompts.AI_PARAMETERS,
                 'available_models': getattr(slicer_prompts, 'AVAILABLE_MODELS', []),
-                'default_model': getattr(slicer_prompts, 'DEFAULT_MODEL', 'gpt-4o'),
+                'default_model': getattr(slicer_prompts, 'DEFAULT_MODEL', 'DeepSeek-R1'),
                 'version': getattr(slicer_prompts, 'PROMPT_VERSION', 'unknown')
             }
         else:
@@ -144,10 +144,11 @@ Generate complete, executable code.""",
 Analyze the error and fix it.""",
             'ai_params': {'temperature': 0.3, 'max_tokens': 8000},
             'available_models': [
-                ("GPT-4o (Recommended)", "gpt-4o"),
+                ("DeepSeek-R1 (Recommended)", "DeepSeek-R1"),
+                ("GPT-4o", "gpt-4o"),
                 ("GPT-4o Mini", "gpt-4o-mini"),
             ],
-            'default_model': 'gpt-4o',
+            'default_model': 'DeepSeek-R1',
             'version': 'built-in-fallback'
         }
 
@@ -171,9 +172,9 @@ Analyze the error and fix it.""",
         """Get the AI model to use"""
         # Get default from configuration if available
         if PROMPTS_LOADED:
-            default_model = getattr(slicer_prompts, 'DEFAULT_MODEL', 'gpt-4o')
+            default_model = getattr(slicer_prompts, 'DEFAULT_MODEL', 'DeepSeek-R1')
         else:
-            default_model = 'gpt-4o'
+            default_model = 'DeepSeek-R1'
         return getattr(self, '_model', default_model)
 
     def loadScriptIntoScene(self, script_file_path):
@@ -929,8 +930,8 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.modelSelector = qt.QComboBox()
         # Load models from configuration
         prompts = self.logic._get_prompts()
-        available_models = prompts.get('available_models', [("GPT-4o", "gpt-4o")])
-        default_model = prompts.get('default_model', 'gpt-4o')
+        available_models = prompts.get('available_models', [("DeepSeek-R1", "DeepSeek-R1")])
+        default_model = prompts.get('default_model', 'DeepSeek-R1')
         
         # Populate model selector
         default_index = 0
@@ -978,7 +979,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         devFormLayout.addRow(script_editor_info)
         
         # Add GitHub token help
-        github_token_info = qt.QLabel("🔑 GitHub Token: Go to github.com/settings/tokens → Generate new token (classic) → Select 'repo' scope → Using GPT-4o via GitHub Models (excellent for coding)")
+        github_token_info = qt.QLabel("🔑 GitHub Token: Go to github.com/settings/tokens → Generate new token (classic) → Select 'repo' scope (for GitHub models) or leave empty for DeepSeek-R1 via Jetstream2")
         github_token_info.setStyleSheet("color: #0366d6; font-size: 10px;")
         github_token_info.setWordWrap(True)
         devFormLayout.addRow(github_token_info)
@@ -1008,7 +1009,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.promptTextEdit.setPlainText("Create a script that downloads data from a URL and renders it in 3D using a single 3D view layout. Use this default URL: https://raw.githubusercontent.com/SlicerMorph/SampleData/refs/heads/master/IMPC_sample_data.nrrd")
         self.promptTextEdit.setFixedHeight(100)
         devFormLayout.addRow(self.promptTextEdit)
-        self.sendButton = qt.QPushButton("🚀 Generate Python Script (GPT-4o via GitHub)")
+        self.sendButton = qt.QPushButton("🚀 Generate Python Script (DeepSeek-R1)")
         devFormLayout.addRow(self.sendButton)
 
         # Connections
@@ -1172,8 +1173,12 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         scriptName = self.scriptNameLineEdit.text.strip()
         outputPath = self.outputPathLineEdit.text.strip()
 
-        if not apiKey:
-            slicer.util.warningDisplay("Please enter your GitHub Personal Access Token.")
+        # Check if API key is needed based on selected model
+        selected_model = self.modelSelector.currentData
+        jetstream_models = ["DeepSeek-R1", "gpt-oss-120b", "llama-4-scout"]
+        
+        if not apiKey and selected_model not in jetstream_models:
+            slicer.util.warningDisplay("Please enter your GitHub Personal Access Token for non-Jetstream2 models.")
             return
         if not userPrompt:
             slicer.util.warningDisplay("Please enter a development prompt.")

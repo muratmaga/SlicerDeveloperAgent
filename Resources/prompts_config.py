@@ -247,7 +247,7 @@ AVAILABLE_MODELS = [
 ]
 
 # Default model (must be a model ID from AVAILABLE_MODELS)
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "DeepSeek-R1"
 
 
 # Prompt version for tracking
