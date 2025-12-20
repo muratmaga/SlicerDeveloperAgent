@@ -12,6 +12,7 @@ from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import qt
 import ctk
+import vtk
 
 # Try to import custom prompt configuration
 try:
@@ -1211,40 +1212,24 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         nodeSelectorLayout.addWidget(self.scriptNodeSelector)
         editorLayout.addLayout(nodeSelectorLayout)
         
-        # Create Monaco editor using qSlicerWebWidget
-        self.codeEditor = slicer.qSlicerWebWidget()
-        self.codeEditor.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
-        self.codeEditor.setMinimumHeight(350)
+        # LAZY INITIALIZATION: Don't create Monaco editor during setup to avoid conflicts
+        # It will be created on first enter() when user actually visits the module
+        self.codeEditor = None
+        self.editorInitialized = False
         
-        # Get the Monaco editor HTML path from Script Editor
-        try:
-            modulePath = os.path.dirname(slicer.modules.scripteditor.path)
-            editorHtmlPath = os.path.join(modulePath, 'Resources', 'monaco-editor', 'index.html')
-            
-            if os.path.exists(editorHtmlPath):
-                self.codeEditor.url = qt.QUrl.fromLocalFile(editorHtmlPath)
-                self.codeEditor.connect("evalResult(QString,QString)", self.onMonacoEvalResult)
-                editorLayout.addWidget(self.codeEditor)
-                print("✅ Monaco editor loaded successfully")
-                
-                # Setup Monaco editor features after a delay
-                qt.QTimer.singleShot(1000, self.setupMonacoFeatures)
-            else:
-                raise FileNotFoundError("Monaco editor HTML not found")
-        except Exception as e:
-            print(f"⚠️ Could not load Monaco editor: {e}")
-            # Fallback to simple text editor
-            self.codeEditor = qt.QTextEdit()
-            self.codeEditor.setMinimumHeight(350)
-            font = qt.QFont("Courier")
-            font.setStyleHint(qt.QFont.Monospace)
-            font.setFixedPitch(True)
-            font.setPointSize(10)
-            self.codeEditor.setFont(font)
-            editorLayout.addWidget(self.codeEditor)
+        # Create placeholder
+        self.editorPlaceholder = qt.QLabel("Editor will initialize when you first visit this module...")
+        self.editorPlaceholder.setMinimumHeight(350)
+        self.editorPlaceholder.setAlignment(qt.Qt.AlignCenter)
+        self.editorPlaceholder.setStyleSheet("background-color: #f5f5f5; color: #666; border: 1px dashed #ccc;")
+        editorLayout.addWidget(self.editorPlaceholder)
         
-        # Connect node selector to update editor
-        self.scriptNodeSelector.currentNodeChanged.connect(self.onScriptNodeChanged)
+        # Store layout reference for lazy editor creation
+        self.editorLayout = editorLayout
+        
+        # DON'T connect node selector here - it will interfere with other modules
+        # Connection will be made on first enter() to avoid premature observer setup
+        self._nodeSelectorConnected = False
         
         # Add Execute button
         executeButton = qt.QPushButton("▶ Execute Script")
@@ -1259,6 +1244,136 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.sendButton.clicked.connect(self.onSendPromptButtonClicked)
 
         self.layout.addStretch(1)
+    
+    def enter(self):
+        """Called when the user switches to this module - restore observers"""
+        # Initialize editor on first visit
+        if not self.editorInitialized:
+            self.initializeEditor()
+            return  # initializeEditor will call enter() again after setup
+        
+        # Connect node selector on first entry only (after editor is ready)
+        if not self._nodeSelectorConnected:
+            self.scriptNodeSelector.currentNodeChanged.connect(self.onScriptNodeChanged)
+            self._nodeSelectorConnected = True
+        
+        # Restart timers if they exist
+        if hasattr(self, 'contextMenuTimer') and self.contextMenuTimer:
+            if not self.contextMenuTimer.isActive():
+                self.contextMenuTimer.start(400)
+        
+        if hasattr(self, 'changeCheckTimer') and self.changeCheckTimer:
+            if not self.changeCheckTimer.isActive():
+                self.changeCheckTimer.start(1000)
+        
+        # Restore observer on current node if we have one
+        if hasattr(self, '_currentObservedNode') and self._currentObservedNode:
+            # Remove any existing observer first (in case it wasn't cleaned up)
+            if hasattr(self, '_nodeModifiedTag') and self._nodeModifiedTag:
+                try:
+                    self._currentObservedNode.RemoveObserver(self._nodeModifiedTag)
+                except:
+                    pass
+            # Add new observer
+            self._nodeModifiedTag = self._currentObservedNode.AddObserver(
+                vtk.vtkCommand.ModifiedEvent, self.onNodeContentModified)
+            # Refresh editor content
+            self.refreshEditorFromNode(self._currentObservedNode)
+        else:
+            # First time entering - check if node selector has a node selected
+            currentNode = self.scriptNodeSelector.currentNode()
+            if currentNode:
+                # Trigger the node changed handler to set everything up
+                self.onScriptNodeChanged(currentNode)
+    
+    def initializeEditor(self):
+        """Lazy initialization of Monaco editor on first module visit"""
+        print("🔧 Initializing DeveloperAgent Monaco editor...")
+        
+        # Remove placeholder
+        self.editorLayout.removeWidget(self.editorPlaceholder)
+        self.editorPlaceholder.deleteLater()
+        
+        # Create Monaco editor using qSlicerWebWidget
+        self.codeEditor = slicer.qSlicerWebWidget()
+        self.codeEditor.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
+        self.codeEditor.setMinimumHeight(350)
+        
+        # Get the Monaco editor HTML path from Script Editor
+        try:
+            modulePath = os.path.dirname(slicer.modules.scripteditor.path)
+            editorHtmlPath = os.path.join(modulePath, 'Resources', 'monaco-editor', 'index.html')
+            
+            if os.path.exists(editorHtmlPath):
+                self.codeEditor.url = qt.QUrl.fromLocalFile(editorHtmlPath)
+                self.codeEditor.connect("evalResult(QString,QString)", self.onMonacoEvalResult)
+                self.editorLayout.insertWidget(self.editorLayout.count() - 1, self.codeEditor)  # Insert before Execute button
+                print("✅ Monaco editor loaded successfully")
+                
+                # Setup Monaco editor features after a delay
+                qt.QTimer.singleShot(1500, self.setupMonacoFeatures)
+                
+                self.editorInitialized = True
+                
+                # Re-enter the module to complete setup
+                qt.QTimer.singleShot(2000, self.enter)
+            else:
+                raise FileNotFoundError("Monaco editor HTML not found")
+        except Exception as e:
+            print(f"⚠️ Could not load Monaco editor: {e}")
+            # Fallback to simple text editor
+            self.codeEditor = qt.QTextEdit()
+            self.codeEditor.setMinimumHeight(350)
+            font = qt.QFont("Courier")
+            font.setStyleHint(qt.QFont.Monospace)
+            font.setFixedPitch(True)
+            font.setPointSize(10)
+            self.codeEditor.setFont(font)
+            self.editorLayout.insertWidget(self.editorLayout.count() - 1, self.codeEditor)
+            
+            self.editorInitialized = True
+            # Re-enter immediately for fallback editor
+            self.enter()
+    
+    def exit(self):
+        """Called when the user switches away from this module - clean up observers"""
+        # Stop timers to reduce unnecessary processing when module is inactive
+        if hasattr(self, 'contextMenuTimer') and self.contextMenuTimer:
+            self.contextMenuTimer.stop()
+        
+        if hasattr(self, 'changeCheckTimer') and self.changeCheckTimer:
+            self.changeCheckTimer.stop()
+        
+        # Remove observer to avoid interfering with other modules
+        if hasattr(self, '_currentObservedNode') and self._currentObservedNode:
+            if hasattr(self, '_nodeModifiedTag') and self._nodeModifiedTag:
+                try:
+                    self._currentObservedNode.RemoveObserver(self._nodeModifiedTag)
+                    self._nodeModifiedTag = None
+                except:
+                    pass
+    
+    def refreshEditorFromNode(self, node):
+        """Refresh editor content from a node without triggering observers"""
+        if not node:
+            return
+        
+        text = node.GetText() if node.GetText() else ""
+        
+        if hasattr(self.codeEditor, 'evalJS'):
+            # Monaco editor
+            import json
+            escaped_text = json.dumps(text)
+            self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+        elif hasattr(self.codeEditor, 'setPlainText'):
+            # QTextEdit fallback
+            try:
+                self.codeEditor.textChanged.disconnect()
+            except:
+                pass
+            self.codeEditor.setPlainText(text)
+            if node:
+                self.codeEditor.textChanged.connect(lambda: self.onCodeEdited(node))
 
     def setupMonacoFeatures(self):
         """Setup Monaco editor features after it's loaded"""
@@ -1525,25 +1640,10 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             
             # Observe node modifications
             self._currentObservedNode = node
-            self._nodeModifiedTag = node.AddObserver(slicer.vtkMRMLNode.ModifiedEvent, self.onNodeContentModified)
+            self._nodeModifiedTag = node.AddObserver(vtk.vtkCommand.ModifiedEvent, self.onNodeContentModified)
             
-            # For Monaco editor (qSlicerWebWidget), use JavaScript to set content
-            if hasattr(self.codeEditor, 'evalJS'):
-                # Monaco editor - set content via JavaScript
-                text = node.GetText() if node.GetText() else ""
-                import json
-                escaped_text = json.dumps(text)
-                # Use the same approach as Script Editor
-                self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
-            elif hasattr(self.codeEditor, 'setPlainText'):
-                # QTextEdit fallback
-                text = node.GetText() if node.GetText() else ""
-                try:
-                    self.codeEditor.textChanged.disconnect()
-                except:
-                    pass
-                self.codeEditor.setPlainText(text)
-                self.codeEditor.textChanged.connect(lambda: self.onCodeEdited(node))
+            # Use refreshEditorFromNode for consistent content loading
+            self.refreshEditorFromNode(node)
         else:
             # Disable editor when no node is selected
             self.setEditorEnabled(False)
