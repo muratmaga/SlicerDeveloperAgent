@@ -312,6 +312,11 @@ Analyze the error and fix it.""",
         if self._outputCallback:
             self._outputCallback(formatted_msg)  # UI output
         slicer.app.processEvents()
+    
+    def _notifyNodeContentChanged(self, textNode):
+        """Notify that a text node's content has changed to update UI displays"""
+        # Trigger a Modified event to update any observers (like Monaco editor)
+        textNode.Modified()
 
     def processRequest(self, apiKey, userPrompt, scriptName=None, outputPath=None):
         try:
@@ -419,9 +424,12 @@ Analyze the error and fix it.""",
                 if new_code is None:
                     return {"success": False, "error": "AI API call failed. Check the conversation log for details."}
 
-                # Write the code to the text node
+                # ALWAYS write the code to the text node first (so it shows in editor even if execution fails)
                 textNode.SetText(new_code)
                 current_code = new_code
+                
+                # Trigger editor update - this ensures Monaco editor displays the generated code
+                self._notifyNodeContentChanged(textNode)
                 
                 # Optionally save to file if output path provided
                 if outputPath:
@@ -1043,6 +1051,8 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = DeveloperAgentLogic()
         self.logic.setOutputCallback(self.appendToConversationView)
         self._parameterNode = None
+        self._currentObservedNode = None
+        self._nodeModifiedTag = None
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -1502,9 +1512,20 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     
     def onScriptNodeChanged(self, node):
         """Called when the script node selector changes"""
+        # Remove observer from previous node
+        if hasattr(self, '_currentObservedNode') and self._currentObservedNode:
+            try:
+                self._currentObservedNode.RemoveObserver(self._nodeModifiedTag)
+            except:
+                pass
+        
         if node:
             # Enable editor when node is selected
             self.setEditorEnabled(True)
+            
+            # Observe node modifications
+            self._currentObservedNode = node
+            self._nodeModifiedTag = node.AddObserver(slicer.vtkMRMLNode.ModifiedEvent, self.onNodeContentModified)
             
             # For Monaco editor (qSlicerWebWidget), use JavaScript to set content
             if hasattr(self.codeEditor, 'evalJS'):
@@ -1531,6 +1552,19 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.codeEditor.evalJS('if (window.editor && window.editor.getModel) { window.editor.getModel().setValue(""); }')
             elif hasattr(self.codeEditor, 'setPlainText'):
                 self.codeEditor.setPlainText("")
+            
+            self._currentObservedNode = None
+    
+    def onNodeContentModified(self, caller, event):
+        """Called when the text node content is modified"""
+        node = caller
+        if node and hasattr(self.codeEditor, 'evalJS'):
+            text = node.GetText() if node.GetText() else ""
+            import json
+            escaped_text = json.dumps(text)
+            self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+        elif node and hasattr(self.codeEditor, 'setPlainText'):
+            self.codeEditor.setPlainText(node.GetText() if node.GetText() else "")
     
     def onCodeEdited(self, node):
         """Save edited code back to the node (for QTextEdit fallback)"""
@@ -1556,6 +1590,45 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             import json
             escaped_text = json.dumps(text)
             self.codeEditor.evalJS(f'if (window.editor && window.editor.getModel) {{ window.editor.getModel().setValue({escaped_text}); }}')
+    
+    def forceEditorUpdate(self, node):
+        """Force update the Monaco editor with the node's current content"""
+        if not node:
+            return
+        
+        text = node.GetText() if node.GetText() else ""
+        
+        # Process any pending Qt events first
+        slicer.app.processEvents()
+        
+        if hasattr(self.codeEditor, 'evalJS'):
+            # Monaco editor - force update via JavaScript
+            import json
+            escaped_text = json.dumps(text)
+            updateScript = f'''
+            (function() {{
+                try {{
+                    if (window.editor && window.editor.getModel) {{
+                        window.editor.getModel().setValue({escaped_text});
+                        console.log("Editor content updated, length: {len(text)} chars");
+                    }} else {{
+                        console.log("Editor not ready yet");
+                    }}
+                }} catch (e) {{
+                    console.log("Error updating editor:", e);
+                }}
+            }})();
+            '''
+            self.codeEditor.evalJS(updateScript)
+            
+            # Give the editor time to process
+            slicer.app.processEvents()
+            
+        elif hasattr(self.codeEditor, 'setPlainText'):
+            # QTextEdit fallback
+            self.codeEditor.setPlainText(text)
+        
+        print(f"✅ Force updated editor with {len(text)} characters")
     
     def getCurrentScriptNode(self):
         """Get current script node from embedded editor, or create new one"""
@@ -1754,12 +1827,16 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         try:
             result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath)
+            
+            # ALWAYS update the editor to show generated code (even if execution failed)
+            self.forceEditorUpdate(currentNode)
+            
             if result['success']:
                 self.conversationView.append(f"✅ <b>Success!</b><br>{result['message']}<hr>")
-                # Code is already in the node and editor should show it automatically
             else:
                 self.conversationView.append(f"❌ <b>Failed.</b><br>"
                                              f"<b>Final Error:</b><br><pre>{result['error']}</pre><hr>")
+                self.conversationView.append(f"<b>ℹ️ Generated code has been loaded in the editor above for manual review and debugging.</b><hr>")
         except Exception as e:
             self.conversationView.append(f"❌ <b>An unexpected error occurred:</b><br><pre>{e}</pre><hr>")
             logging.error(f"DeveloperAgent unexpected error: {e}", exc_info=True)
