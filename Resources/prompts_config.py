@@ -227,24 +227,16 @@ AI_PARAMETERS = {
 }
 
 
-# Available AI models from GitHub Models API
+# Available Jetstream2 inference service models
 # Format: ("Display Name", "model-id")
-# Update this list as GitHub adds new models: https://github.com/marketplace/models
+# Current models as of 2026: https://docs.jetstream-cloud.org/inference-service/overview/#which-models-do-you-offer
 AVAILABLE_MODELS = [
-    ("GPT-4o (Recommended)", "gpt-4o"),
-    ("GPT-4o Mini (Faster, Lower Quota)", "gpt-4o-mini"),
-    ("GPT-4 Turbo", "gpt-4-turbo"),
-    ("AI21 Jamba 1.5 Large", "AI21-Jamba-1.5-Large"),
-    ("AI21 Jamba 1.5 Mini", "AI21-Jamba-1.5-Mini"),
-    ("Phi-4 (Microsoft)", "Phi-4"),
-    ("Meta Llama 3.3 70B Instruct", "meta-llama-3.3-70b-instruct"),
-    ("Meta Llama 3.1 405B Instruct", "meta-llama-3.1-405b-instruct"),
-    ("Mistral Large 2", "mistral-large-2"),
-    ("Cohere Command R+", "cohere-command-r-plus"),
-    # Jetstream2 models (free, no API key required from Jetstream2 network)
-    ("DeepSeek R1 [Jetstream2] (Best Reasoning, 671B)", "DeepSeek-R1"),
-    ("gpt-oss-120b [Jetstream2] (Fast Reasoning)", "gpt-oss-120b"),
-    ("Llama 4 Scout [Jetstream2] (General + Vision)", "llama-4-scout"),
+    # DeepSeek R1: best reasoning (671B), chains-of-thought, ~36 tok/s
+    ("DeepSeek R1 (Best Reasoning, 671B)", "DeepSeek-R1"),
+    # gpt-oss-120b: fast reasoning model from OpenAI, ~180 tok/s, configurable thinking effort
+    ("gpt-oss-120b (Fast Reasoning, ~180 tok/s)", "gpt-oss-120b"),
+    # Llama 4 Scout: general-purpose + vision, fastest, ~83 tok/s
+    ("Llama 4 Scout (General + Vision, ~83 tok/s)", "llama-4-scout"),
 ]
 
 # Default model (must be a model ID from AVAILABLE_MODELS)
@@ -252,5 +244,5 @@ DEFAULT_MODEL = "DeepSeek-R1"
 
 
 # Prompt version for tracking
-PROMPT_VERSION = "2.0.0"
-PROMPT_LAST_UPDATED = "2025-12-13"
+PROMPT_VERSION = "2.1.0"
+PROMPT_LAST_UPDATED = "2026-03-04"

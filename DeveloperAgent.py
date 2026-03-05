@@ -145,9 +145,10 @@ Generate complete, executable code.""",
 Analyze the error and fix it.""",
             'ai_params': {'temperature': 0.3, 'max_tokens': 8000},
             'available_models': [
-                ("DeepSeek-R1 (Recommended)", "DeepSeek-R1"),
-                ("GPT-4o", "gpt-4o"),
-                ("GPT-4o Mini", "gpt-4o-mini"),
+                # Jetstream2 models (free, no API key required from Jetstream2 network)
+                ("DeepSeek R1 [JS2] (Best Reasoning, 671B)", "DeepSeek-R1"),
+                ("gpt-oss-120b [JS2] (Fast Reasoning, ~180 tok/s)", "gpt-oss-120b"),
+                ("Llama 4 Scout [JS2] (General + Vision)", "llama-4-scout"),
             ],
             'default_model': 'DeepSeek-R1',
             'version': 'built-in-fallback'
@@ -939,12 +940,12 @@ print("Script executed successfully!")
             generated_code = response.choices[0].message.content.strip()
             self.diagnostic_print(f"RECEIVED FROM AI - Code length: {len(generated_code)} chars")
             
-            # Strip <think> tags from DeepSeek-R1 responses
+            # Strip <think> tags from reasoning models (DeepSeek-R1, gpt-oss-120b)
             import re
             # Remove everything between <think> and </think> tags (including the tags)
             generated_code = re.sub(r'<think>.*?</think>', '', generated_code, flags=re.DOTALL)
-            # Also handle <Think> tags (case insensitive)
-            generated_code = re.sub(r'<Think>.*?</Think>', '', generated_code, flags=re.DOTALL|re.IGNORECASE)
+            # Also handle case-insensitive variants
+            generated_code = re.sub(r'<think>.*?</think>', '', generated_code, flags=re.DOTALL|re.IGNORECASE)
             generated_code = generated_code.strip()
             
             # Clean up the response
