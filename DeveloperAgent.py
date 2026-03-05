@@ -1138,11 +1138,11 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         devFormLayout = qt.QFormLayout(devCollapsibleButton)
 
         # Add GitHub token help
-        github_token_info = qt.QLabel("🔑 GitHub Token: Optional for DeepSeek-R1 (Jetstream2), required for GitHub models")
-        github_token_info.setStyleSheet("color: #0366d6; font-size: 10px;")
-        github_token_info.setWordWrap(True)
-        devFormLayout.addRow(github_token_info)
-        
+        # github_token_info = qt.QLabel("🔑 GitHub Token: Optional for DeepSeek-R1 (Jetstream2), required for GitHub models")
+        # github_token_info.setStyleSheet("color: #0366d6; font-size: 10px;")
+        # github_token_info.setWordWrap(True)
+        # devFormLayout.addRow(github_token_info)
+
         # --- Conversation UI & Prompt (before editor) ---
         devFormLayout.addRow(qt.QLabel("<b>Conversation & Prompt</b>"))
         
@@ -1911,7 +1911,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         msg.setInformativeText("The 'openai' library is required for GitHub Models API. Would you like to install it now?")
         msg.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
         if msg.exec_() == qt.QMessageBox.Ok:
-            self.conversationView.append("<b>Installing 'openai' library (for GitHub Models API)...</b>")
+            self.conversationView.append("<b>Installing 'openai' library...</b>")
             slicer.util.pip_install('openai')
             self.conversationView.append("<b>Installation complete.</b>")
 
