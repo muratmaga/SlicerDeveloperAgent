@@ -91,6 +91,7 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
                 'ai_params': slicer_prompts.AI_PARAMETERS,
                 'available_models': getattr(slicer_prompts, 'AVAILABLE_MODELS', []),
                 'default_model': getattr(slicer_prompts, 'DEFAULT_MODEL', 'DeepSeek-R1'),
+                'conversational_prompt': getattr(slicer_prompts, 'SYSTEM_PROMPT_CONVERSATIONAL', ''),
                 'version': getattr(slicer_prompts, 'PROMPT_VERSION', 'unknown')
             }
         else:
@@ -151,6 +152,7 @@ Analyze the error and fix it.""",
                 ("Llama 4 Scout [JS2] (General + Vision)", "llama-4-scout"),
             ],
             'default_model': 'DeepSeek-R1',
+            'conversational_prompt': """You are a knowledgeable expert in 3D Slicer. Answer questions clearly in plain language. Do not generate code unless asked. Reference specific Slicer modules and effects by name. Use numbered steps for workflows.""",
             'version': 'built-in-fallback'
         }
 
@@ -389,6 +391,56 @@ Analyze the error and fix it.""",
         
         # Generate code using AI
         return self.createScriptToNode(client, userPrompt, textNode, scriptName, outputPath, existingCode)
+
+    def processConversationalRequest(self, apiKey, userPrompt):
+        """Answer a plain-language question without generating any code."""
+        try:
+            from openai import OpenAI
+
+            model_name = self.getModel()
+            jetstream_endpoints = {
+                "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
+                "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
+                "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
+            }
+
+            if model_name in jetstream_endpoints:
+                client = OpenAI(api_key="empty", base_url=jetstream_endpoints[model_name])
+            else:
+                client = OpenAI(api_key=apiKey, base_url="https://models.inference.ai.azure.com")
+        except ImportError:
+            return {"success": False, "error": "OpenAI library not found. Please install it with: pip install openai"}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
+
+        try:
+            prompts = self._get_prompts(user_request=userPrompt)
+            system_prompt = prompts.get('conversational_prompt', '')
+            ai_params = prompts.get('ai_params', {})
+
+            self.diagnostic_print(f"Conversational request to model: {model_name}")
+
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": userPrompt}
+                ],
+                temperature=ai_params.get('temperature', 0.5),
+                max_tokens=ai_params.get('max_tokens', 2048)
+            )
+
+            answer = response.choices[0].message.content.strip()
+
+            # Strip <think> tags from reasoning models
+            import re
+            answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL | re.IGNORECASE).strip()
+
+            return {"success": True, "response": answer}
+
+        except Exception as e:
+            self.diagnostic_print(f"Conversational request failed: {e}", error=True)
+            return {"success": False, "error": str(e)}
 
 
 
@@ -1155,6 +1207,20 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.checkForOpenAILibrary()
         self.checkForScriptEditor()
         
+        # --- Mode Selection ---
+        modeWidget = qt.QWidget()
+        modeLayout = qt.QHBoxLayout(modeWidget)
+        modeLayout.setContentsMargins(0, 0, 0, 0)
+        self.generateScriptRadio = qt.QRadioButton("Generate Script")
+        self.askQuestionRadio = qt.QRadioButton("Ask a Question")
+        self.generateScriptRadio.setChecked(True)
+        self.generateScriptRadio.setToolTip("Generate a Python script in 3D Slicer")
+        self.askQuestionRadio.setToolTip("Ask a question and get a plain-language answer (no code generated)")
+        modeLayout.addWidget(self.generateScriptRadio)
+        modeLayout.addWidget(self.askQuestionRadio)
+        modeLayout.addStretch()
+        devFormLayout.addRow("Mode:", modeWidget)
+
         self.promptTextEdit = qt.QTextEdit()
         self.promptTextEdit.setPlaceholderText("Describe what you want the script to do, or provide feedback about the current code...")
         self.promptTextEdit.setFixedHeight(100)
@@ -1172,6 +1238,9 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "When unchecked, AI generates new code from scratch."
         )
         devFormLayout.addRow(self.includeCurrentCodeCheckbox)
+
+        # Hide code-only controls when in Ask mode
+        self.generateScriptRadio.toggled.connect(self._onModeToggled)
         
         self.sendButton = qt.QPushButton("🚀 Send to Agent")
         devFormLayout.addRow(self.sendButton)
@@ -1270,6 +1339,10 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.sendButton.clicked.connect(self.onSendPromptButtonClicked)
 
         self.layout.addStretch(1)
+
+    def _onModeToggled(self, generateMode):
+        """Show/hide script-only controls based on selected mode"""
+        self.includeCurrentCodeCheckbox.setVisible(generateMode)
     
     def enter(self):
         """Called when the user switches to this module - restore observers"""
@@ -1920,28 +1993,56 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onSendPromptButtonClicked(self):
         apiKey = self.apiKeyLineEdit.text.strip()
         userPrompt = self.promptTextEdit.toPlainText().strip()
-        outputPath = self.outputPathLineEdit.text.strip()
+
+        if not userPrompt:
+            slicer.util.warningDisplay("Please enter a prompt.")
+            return
 
         # Check if API key is needed based on selected model
         selected_model = self.modelSelector.currentData
         jetstream_models = ["DeepSeek-R1", "gpt-oss-120b", "llama-4-scout"]
-        
         if not apiKey and selected_model not in jetstream_models:
             slicer.util.warningDisplay("Please enter your GitHub Personal Access Token for non-Jetstream2 models.")
             return
-        if not userPrompt:
-            slicer.util.warningDisplay("Please enter a development prompt.")
+
+        self.logic.setDebugIterations(self.debugIterationsSpinBox.value)
+        self.logic.setModel(self.modelSelector.currentData)
+        self.sendButton.enabled = False
+
+        # --- Ask a Question mode ---
+        if self.askQuestionRadio.isChecked():
+            self.conversationView.append(f"<h2>Question</h2><b>Q:</b> {userPrompt}<br>"
+                                         f"<i>Thinking, please wait...</i><hr>")
+            slicer.app.processEvents()
+            try:
+                result = self.logic.processConversationalRequest(apiKey, userPrompt)
+                if result['success']:
+                    # Render response as HTML paragraphs
+                    answer_html = result['response'].replace('\n', '<br>')
+                    self.conversationView.append(f"<b>A:</b><br>{answer_html}<hr>")
+                else:
+                    self.conversationView.append(f"❌ <b>Failed.</b><br><pre>{result['error']}</pre><hr>")
+            except Exception as e:
+                self.conversationView.append(f"❌ <b>An unexpected error occurred:</b><br><pre>{e}</pre><hr>")
+                logging.error(f"DeveloperAgent conversational error: {e}", exc_info=True)
+            finally:
+                self.sendButton.enabled = True
             return
+
+        # --- Generate Script mode ---
+        outputPath = self.outputPathLineEdit.text.strip()
         if not outputPath:
             slicer.util.warningDisplay("Please specify an output directory.")
+            self.sendButton.enabled = True
             return
-        
+
         # Get or create text node from embedded editor
         currentNode = self.getCurrentScriptNode()
         if not currentNode:
             slicer.util.warningDisplay("Could not get or create script node.")
+            self.sendButton.enabled = True
             return
-        
+
         # Get current code if checkbox is checked
         currentCode = None
         if self.includeCurrentCodeCheckbox.isChecked():
@@ -1949,42 +2050,35 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if not currentCode.strip():
                 self.conversationView.append("<i>⚠️ 'Include current code' is checked but editor is empty. Generating new code instead.</i><br>")
                 currentCode = None
-        
+
         scriptName = currentNode.GetName().replace('.py', '')
-        
+
         # Validate that the output path is accessible
         try:
             if not os.path.exists(outputPath):
                 os.makedirs(outputPath)
             elif not os.path.isdir(outputPath):
                 slicer.util.warningDisplay(f"Output path is not a directory: {outputPath}")
+                self.sendButton.enabled = True
                 return
         except Exception as e:
             slicer.util.warningDisplay(f"Cannot access output directory: {str(e)}")
+            self.sendButton.enabled = True
             return
 
-        self.sendButton.enabled = False
-        
-        # Update logic with current settings
-        self.logic.setDebugIterations(self.debugIterationsSpinBox.value)
-        self.logic.setModel(self.modelSelector.currentData)
-        
-        display_target = scriptName
         mode = "Improving Existing Code" if currentCode else "Generating New Script"
-            
         self.conversationView.append(f"<h2>New Request</h2><b>Mode:</b> {mode}<br>"
-                                     f"<b>Script:</b> {display_target}<br>"
+                                     f"<b>Script:</b> {scriptName}<br>"
                                      f"<b>Request:</b> {userPrompt}<br>"
                                      f"<i>Processing, please wait...</i><hr>")
         slicer.app.processEvents()
 
-        # Process the request
         try:
             result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath, currentCode)
-            
+
             # ALWAYS update the editor to show generated code (even if execution failed)
             self.forceEditorUpdate(currentNode)
-            
+
             if result['success']:
                 self.conversationView.append(f"✅ <b>Success!</b><br>{result['message']}<hr>")
             else:

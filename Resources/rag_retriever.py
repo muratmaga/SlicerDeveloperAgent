@@ -11,6 +11,7 @@ import re
 
 INDEX_FILE = os.path.join(os.path.dirname(__file__), 'slicer_rag_index.json')
 CURATED_FILE = os.path.join(os.path.dirname(__file__), 'curated_examples.json')
+TUTORIALS_INDEX_FILE = os.path.join(os.path.dirname(__file__), 'slicermorph_tutorials_index.json')
 
 
 class SlicerRAG:
@@ -19,10 +20,12 @@ class SlicerRAG:
     def __init__(self):
         self.index = None
         self.curated = []
+        self.tutorials = []
         self.has_ml = False
         self.model = None
         self.load_index()
         self.load_curated()
+        self.load_tutorials()
     
     def load_curated(self):
         """Load curated examples (prioritized over auto-indexed)"""
@@ -67,6 +70,28 @@ class SlicerRAG:
                 self.has_ml = False
         
         return True
+
+    def load_tutorials(self):
+        """Load the SlicerMorph tutorials index if available"""
+        if not os.path.exists(TUTORIALS_INDEX_FILE):
+            return False
+        try:
+            with open(TUTORIALS_INDEX_FILE, 'r') as f:
+                data = json.load(f)
+            self.tutorials = data.get('examples', [])
+            # Ensure searchable field exists
+            for entry in self.tutorials:
+                if 'searchable' not in entry:
+                    entry['searchable'] = ' '.join([
+                        entry.get('heading', ''),
+                        entry.get('description', ''),
+                        entry.get('tutorial_text', '')[:300],
+                        ' '.join(entry.get('keywords', [])),
+                    ]).lower()
+            return True
+        except Exception as e:
+            print(f"Warning: Could not load tutorials index: {e}")
+            return False
     
     def retrieve_ml(self, query, top_k=5):
         """Retrieve using ML embeddings (cosine similarity)"""
@@ -137,6 +162,22 @@ class SlicerRAG:
             
             if matches > 0:
                 scores.append((matches, example))
+
+        # Also search SlicerMorph tutorials
+        for example in self.tutorials:
+            searchable = example.get('searchable', '')
+
+            matches = sum(1 for term in query_terms if term in searchable)
+
+            if query_lower in searchable:
+                matches += 5
+
+            keywords = example.get('keywords', [])
+            keyword_matches = sum(1 for term in query_terms if any(term in kw.lower() for kw in keywords))
+            matches += keyword_matches * 2
+
+            if matches > 0:
+                scores.append((matches, example))
         
         # Sort by score
         scores.sort(reverse=True, key=lambda x: x[0])
@@ -169,26 +210,35 @@ class SlicerRAG:
             code = example.get('code', '').strip()
             heading = example.get('heading', '').strip()
             source = example.get('source', '')
-            
-            # Skip if empty or too large
-            if not code or len(code) < 20:
-                continue
-            
-            # Check if adding this would exceed limit
-            entry_size = len(code) + len(heading) + 50
-            if total_chars + entry_size > max_chars:
-                break
-            
-            # Add example
-            if heading:
-                sections.append(f"\n## Example: {heading}")
+            content_type = example.get('content_type', 'code')
+
+            # For tutorial entries show prose; for code entries show the code block
+            if content_type == 'tutorial':
+                body = example.get('tutorial_text', example.get('description', '')).strip()
+                if not body:
+                    continue
+                entry_size = len(body) + len(heading) + 60
+                if total_chars + entry_size > max_chars:
+                    break
+                if heading:
+                    sections.append(f"\n## SlicerMorph Tutorial: {heading}")
+                sections.append(f"{body}\n")
+                total_chars += entry_size
+                included_count += 1
             else:
-                sections.append(f"\n## Example from {source}")
-            
-            sections.append(f"{code}\n")
-            
-            total_chars += entry_size
-            included_count += 1
+                # Skip if empty or too large
+                if not code or len(code) < 20:
+                    continue
+                entry_size = len(code) + len(heading) + 50
+                if total_chars + entry_size > max_chars:
+                    break
+                if heading:
+                    sections.append(f"\n## Example: {heading}")
+                else:
+                    sections.append(f"\n## Example from {source}")
+                sections.append(f"{code}\n")
+                total_chars += entry_size
+                included_count += 1
         
         if included_count == 0:
             return ""
