@@ -36,14 +36,11 @@ except Exception as e:
     PROMPTS_SOURCE = f"error: {str(e)}"
     logging.warning(f"Could not load Resources/prompts_config.py: {e}. Using built-in prompts.")
 
-# Jetstream2 inference endpoints (free, no API key required from the JS2 network).
-# Single source of truth for which models the agent can reach; the model ids here
-# must match the ids in Resources/prompts_config.py AVAILABLE_MODELS.
-JETSTREAM_ENDPOINTS = {
-    "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
-    "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
-    "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
-}
+# Jetstream2 inference service (free, no API key required from the JS2 network).
+# One unified LiteLLM endpoint serves every model; the model is chosen by name in each
+# request. The selectable model ids live in Resources/prompts_config.py AVAILABLE_MODELS
+# and must match what the service currently advertises at JETSTREAM_BASE_URL + "/models".
+JETSTREAM_BASE_URL = "https://llm.jetstream-cloud.org/v1"
 
 #
 # DeveloperAgent
@@ -99,7 +96,7 @@ class DeveloperAgentLogic(ScriptedLoadableModuleLogic):
                 'error_section': slicer_prompts.ERROR_ANALYSIS_SECTION,
                 'ai_params': slicer_prompts.AI_PARAMETERS,
                 'available_models': getattr(slicer_prompts, 'AVAILABLE_MODELS', []),
-                'default_model': getattr(slicer_prompts, 'DEFAULT_MODEL', 'DeepSeek-R1'),
+                'default_model': getattr(slicer_prompts, 'DEFAULT_MODEL', 'gpt-oss-120b'),
                 'conversational_prompt': getattr(slicer_prompts, 'SYSTEM_PROMPT_CONVERSATIONAL', ''),
                 'version': getattr(slicer_prompts, 'PROMPT_VERSION', 'unknown')
             }
@@ -156,11 +153,11 @@ Analyze the error and fix it.""",
             'ai_params': {'temperature': 0.3, 'max_tokens': 8000},
             'available_models': [
                 # Jetstream2 models (free, no API key required from Jetstream2 network)
-                ("DeepSeek R1 [JS2] (Best Reasoning, 671B)", "DeepSeek-R1"),
                 ("gpt-oss-120b [JS2] (Fast Reasoning, ~180 tok/s)", "gpt-oss-120b"),
                 ("Llama 4 Scout [JS2] (General + Vision)", "llama-4-scout"),
+                ("Kimi-K2.6 [JS2] (Strong Coding)", "Kimi-K2.6"),
             ],
-            'default_model': 'DeepSeek-R1',
+            'default_model': 'gpt-oss-120b',
             'conversational_prompt': """You are a knowledgeable expert in 3D Slicer. Answer questions clearly in plain language. Do not generate code unless asked. Reference specific Slicer modules and effects by name. Use numbered steps for workflows.""",
             'version': 'built-in-fallback'
         }
@@ -185,9 +182,9 @@ Analyze the error and fix it.""",
         """Get the AI model to use"""
         # Get default from configuration if available
         if PROMPTS_LOADED:
-            default_model = getattr(slicer_prompts, 'DEFAULT_MODEL', 'DeepSeek-R1')
+            default_model = getattr(slicer_prompts, 'DEFAULT_MODEL', 'gpt-oss-120b')
         else:
-            default_model = 'DeepSeek-R1'
+            default_model = 'gpt-oss-120b'
         return getattr(self, '_model', default_model)
 
     def loadScriptIntoScene(self, script_file_path):
@@ -341,13 +338,10 @@ Analyze the error and fix it.""",
         except ImportError:
             return None, "OpenAI library not found. Please install it with: pip install openai"
 
-        model_name = self.getModel()
-        base_url = JETSTREAM_ENDPOINTS.get(model_name)
-        if not base_url:
-            return None, (f"Unknown model '{model_name}'. Available Jetstream2 models: "
-                          f"{', '.join(JETSTREAM_ENDPOINTS)}")
+        # Jetstream2 serves every model from one unified endpoint (LiteLLM); the model
+        # is selected by name in each request, so no per-model URL lookup is needed.
         try:
-            client = OpenAI(api_key="empty", base_url=base_url)
+            client = OpenAI(api_key="empty", base_url=JETSTREAM_BASE_URL)
             return client, None
         except Exception as e:
             return None, f"Failed to initialize AI client: {str(e)}"
@@ -952,7 +946,7 @@ print("Script executed successfully!")
             generated_code = response.choices[0].message.content.strip()
             self.diagnostic_print(f"RECEIVED FROM AI - Code length: {len(generated_code)} chars")
             
-            # Strip <think> tags from reasoning models (DeepSeek-R1, gpt-oss-120b)
+            # Strip <think> tags from reasoning models (e.g. gpt-oss-120b)
             import re
             # Remove everything between <think> and </think> tags (including the tags)
             generated_code = re.sub(r'<think>.*?</think>', '', generated_code, flags=re.DOTALL)
@@ -1108,8 +1102,8 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.modelSelector = qt.QComboBox()
         # Load models from configuration
         prompts = self.logic._get_prompts()
-        available_models = prompts.get('available_models', [("DeepSeek-R1", "DeepSeek-R1")])
-        default_model = prompts.get('default_model', 'DeepSeek-R1')
+        available_models = prompts.get('available_models', [("gpt-oss-120b", "gpt-oss-120b")])
+        default_model = prompts.get('default_model', 'gpt-oss-120b')
         
         # Populate model selector
         default_index = 0

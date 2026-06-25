@@ -275,18 +275,20 @@ AI_PARAMETERS = {
 # Format: ("Display Name", "model-id")
 # Current models as of 2026: https://docs.jetstream-cloud.org/inference-service/overview/#which-models-do-you-offer
 AVAILABLE_MODELS = [
-    # DeepSeek R1: best reasoning (671B), chains-of-thought, ~36 tok/s
-    ("DeepSeek R1 (Best Reasoning, 671B)", "DeepSeek-R1"),
     # gpt-oss-120b: fast reasoning model from OpenAI, ~180 tok/s, configurable thinking effort
     ("gpt-oss-120b (Fast Reasoning, ~180 tok/s)", "gpt-oss-120b"),
-    # Llama 4 Scout: general-purpose + vision, fastest, ~83 tok/s
+    # Llama 4 Scout: general-purpose + vision, ~83 tok/s
     ("Llama 4 Scout (General + Vision, ~83 tok/s)", "llama-4-scout"),
+    # Kimi-K2.6: strong general-purpose / coding model
+    ("Kimi-K2.6 (Strong Coding)", "Kimi-K2.6"),
+    # NOTE: DeepSeek-R1 was dropped from the JS2 service (its endpoint now returns 405).
+    # To see what is served right now: curl https://llm.jetstream-cloud.org/v1/models
 ]
 
-# Default model (must be a model ID from AVAILABLE_MODELS)
-DEFAULT_MODEL = "DeepSeek-R1"
+# Default model (must be a model ID from AVAILABLE_MODELS that the JS2 service serves)
+DEFAULT_MODEL = "gpt-oss-120b"
 
 
 # Prompt version for tracking
-PROMPT_VERSION = "2.2.0"
+PROMPT_VERSION = "2.3.0"
 PROMPT_LAST_UPDATED = "2026-06-25"
