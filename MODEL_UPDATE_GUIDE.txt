@@ -1,0 +1,56 @@
+===============================================
+Adding New AI Models - Quick Reference
+===============================================
+
+GitHub regularly adds new models to their API.
+Update your DeveloperAgent in 3 simple steps:
+
+STEP 1: Check Available Models
+-------------------------------
+Visit: https://github.com/marketplace/models
+Look for new models and note their model IDs
+
+STEP 2: Edit Resources/prompts_config.py
+-----------------------------------------
+Open Resources/prompts_config.py and find AVAILABLE_MODELS:
+
+    AVAILABLE_MODELS = [
+        ("Display Name", "model-id"),
+        ...
+        # Add your new model:
+        ("New Model Name", "new-model-id"),
+    ]
+
+Optional - change default:
+    DEFAULT_MODEL = "gpt-4o"  # or your preferred model
+
+STEP 3: Reload Module in Slicer
+--------------------------------
+In Slicer Python console:
+    >>> import importlib
+    >>> import DeveloperAgent
+    >>> importlib.reload(DeveloperAgent)
+
+The new models will appear in the dropdown!
+
+CURRENT MODELS IN CONFIG:
+-------------------------
+✓ GPT-4o (Recommended)
+✓ GPT-4o Mini (Faster, Lower Quota)
+✓ GPT-4 Turbo
+✓ AI21 Jamba 1.5 Large
+✓ AI21 Jamba 1.5 Mini
+✓ Phi-4 (Microsoft)
+✓ Meta Llama 3.3 70B Instruct
+✓ Meta Llama 3.1 405B Instruct
+✓ Mistral Large 2
+✓ Cohere Command R+
+
+TIPS:
+-----
+- Different models have different rate limits
+- Some models are faster but less capable
+- Test new models with simple requests first
+- Keep notes on which models work best for Slicer
+
+===============================================
