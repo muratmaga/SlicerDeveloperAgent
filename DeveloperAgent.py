@@ -36,6 +36,15 @@ except Exception as e:
     PROMPTS_SOURCE = f"error: {str(e)}"
     logging.warning(f"Could not load Resources/prompts_config.py: {e}. Using built-in prompts.")
 
+# Jetstream2 inference endpoints (free, no API key required from the JS2 network).
+# Single source of truth for which models the agent can reach; the model ids here
+# must match the ids in Resources/prompts_config.py AVAILABLE_MODELS.
+JETSTREAM_ENDPOINTS = {
+    "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
+    "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
+    "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
+}
+
 #
 # DeveloperAgent
 #
@@ -320,100 +329,51 @@ Analyze the error and fix it.""",
         """Notify that a text node's content has changed - must be called from main thread"""
         textNode.Modified()
 
-    def processRequest(self, apiKey, userPrompt, scriptName=None, outputPath=None):
-        try:
-            from openai import OpenAI
-            
-            # Get selected model
-            model_name = self.getModel()
-            
-            # Jetstream2 model endpoints (free, no API key required)
-            jetstream_endpoints = {
-                "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
-                "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
-                "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
-            }
-            
-            # Create appropriate client based on model
-            if model_name in jetstream_endpoints:
-                # Jetstream2 models - no API key needed, access from Jetstream2 network
-                client = OpenAI(
-                    api_key="empty",  # Jetstream2 doesn't require authentication from their network
-                    base_url=jetstream_endpoints[model_name]
-                )
-            else:
-                # GitHub Models API (included with GitHub Copilot subscription)
-                client = OpenAI(
-                    api_key=apiKey,
-                    base_url="https://models.inference.ai.azure.com"
-                )
-        except ImportError:
-            return {"success": False, "error": "OpenAI library not found. Please install it with: pip install openai"}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
-        return {"success": False, "error": "No script name specified."}
+    def _createClient(self):
+        """Create an OpenAI-compatible client for the selected Jetstream2 model.
 
-    def processRequestToNode(self, apiKey, userPrompt, textNode, outputPath=None, existingCode=None):
-        """Process request and write generated code directly to a text node"""
+        Jetstream2 inference is free and needs no API key when reached from the
+        Jetstream2 network, so a placeholder key is sent. Returns (client, error):
+        on success error is None; on failure client is None and error is a message.
+        """
         try:
             from openai import OpenAI
-            
-            # Get selected model
-            model_name = self.getModel()
-            
-            # Jetstream2 model endpoints (free, no API key required)
-            jetstream_endpoints = {
-                "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
-                "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
-                "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
-            }
-            
-            # Create appropriate client based on model
-            if model_name in jetstream_endpoints:
-                client = OpenAI(
-                    api_key="empty",
-                    base_url=jetstream_endpoints[model_name]
-                )
-            else:
-                client = OpenAI(
-                    api_key=apiKey,
-                    base_url="https://models.inference.ai.azure.com"
-                )
         except ImportError:
-            return {"success": False, "error": "OpenAI library not found. Please install it with: pip install openai"}
+            return None, "OpenAI library not found. Please install it with: pip install openai"
+
+        model_name = self.getModel()
+        base_url = JETSTREAM_ENDPOINTS.get(model_name)
+        if not base_url:
+            return None, (f"Unknown model '{model_name}'. Available Jetstream2 models: "
+                          f"{', '.join(JETSTREAM_ENDPOINTS)}")
+        try:
+            client = OpenAI(api_key="empty", base_url=base_url)
+            return client, None
         except Exception as e:
-            return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
-        
+            return None, f"Failed to initialize AI client: {str(e)}"
+
+    def processRequestToNode(self, userPrompt, textNode, outputPath=None, existingCode=None):
+        """Process request and write generated code directly to a text node"""
+        client, error = self._createClient()
+        if error:
+            return {"success": False, "error": error}
+
         if not textNode:
             return {"success": False, "error": "No text node provided."}
-        
+
         scriptName = textNode.GetName().replace('.py', '')
-        
+
         # Generate code using AI
         return self.createScriptToNode(client, userPrompt, textNode, scriptName, outputPath, existingCode)
 
-    def processConversationalRequest(self, apiKey, userPrompt):
+    def processConversationalRequest(self, userPrompt):
         """Answer a plain-language question without generating any code."""
-        try:
-            from openai import OpenAI
+        client, error = self._createClient()
+        if error:
+            return {"success": False, "error": error}
 
+        try:
             model_name = self.getModel()
-            jetstream_endpoints = {
-                "DeepSeek-R1": "https://llm.jetstream-cloud.org/sglang/v1",
-                "gpt-oss-120b": "https://llm.jetstream-cloud.org/gpt-oss-120b/v1",
-                "llama-4-scout": "https://llm.jetstream-cloud.org/llama-4-scout/v1",
-            }
-
-            if model_name in jetstream_endpoints:
-                client = OpenAI(api_key="empty", base_url=jetstream_endpoints[model_name])
-            else:
-                client = OpenAI(api_key=apiKey, base_url="https://models.inference.ai.azure.com")
-        except ImportError:
-            return {"success": False, "error": "OpenAI library not found. Please install it with: pip install openai"}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to initialize AI client: {str(e)}"}
-
-        try:
             prompts = self._get_prompts(user_request=userPrompt)
             system_prompt = prompts.get('conversational_prompt', '')
             ai_params = prompts.get('ai_params', {})
@@ -1055,7 +1015,7 @@ print("Script executed successfully!")
             # Check for authentication errors
             elif "401" in error_msg or "authentication" in error_msg.lower() or "invalid" in error_msg.lower():
                 self.diagnostic_print("❌ AUTHENTICATION ERROR", error=True)
-                self.diagnostic_print("Your GitHub token may be invalid or expired.", error=True)
+                self.diagnostic_print("Jetstream2 inference is only reachable from the Jetstream2 network (or via VPN).", error=True)
                 self.diagnostic_print(f"Full error: {error_msg}", error=True)
                 return None
             
@@ -1130,16 +1090,11 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.setup(self)
         self.layout.setContentsMargins(15, 15, 15, 15)
 
-        # --- API Configuration ---
+        # --- Configuration ---
         setupCollapsibleButton = ctk.ctkCollapsibleButton()
-        setupCollapsibleButton.text = "API Configuration"
+        setupCollapsibleButton.text = "Configuration"
         self.layout.addWidget(setupCollapsibleButton)
         setupFormLayout = qt.QFormLayout(setupCollapsibleButton)
-        self.apiKeyLineEdit = qt.QLineEdit()
-        # --- GitHub Token Setup ---
-        self.apiKeyLineEdit.setPlaceholderText("ghp_... or ghu_... (GitHub Personal Access Token)")
-        # To get your token: https://github.com/settings/tokens
-        setupFormLayout.addRow("GitHub Token:", self.apiKeyLineEdit)
         
         # --- Debug Iterations Configuration ---
         self.debugIterationsSpinBox = qt.QSpinBox()
@@ -1188,12 +1143,6 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         devCollapsibleButton.collapsed = False
         self.layout.addWidget(devCollapsibleButton)
         devFormLayout = qt.QFormLayout(devCollapsibleButton)
-
-        # Add GitHub token help
-        # github_token_info = qt.QLabel("🔑 GitHub Token: Optional for DeepSeek-R1 (Jetstream2), required for GitHub models")
-        # github_token_info.setStyleSheet("color: #0366d6; font-size: 10px;")
-        # github_token_info.setWordWrap(True)
-        # devFormLayout.addRow(github_token_info)
 
         # --- Conversation UI & Prompt (before editor) ---
         devFormLayout.addRow(qt.QLabel("<b>Conversation & Prompt</b>"))
@@ -1897,7 +1846,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic.debugScriptEditor()
 
     def checkForOpenAILibrary(self):
-        """Check if the openai library is installed (needed for GitHub Models API)"""
+        """Check if the openai library is installed (needed to reach Jetstream2 inference)"""
         try:
             from openai import OpenAI
         except ImportError:
@@ -1981,7 +1930,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         msg = qt.QMessageBox()
         msg.setIcon(qt.QMessageBox.Warning)
         msg.setText("OpenAI Library Not Found")
-        msg.setInformativeText("The 'openai' library is required for GitHub Models API. Would you like to install it now?")
+        msg.setInformativeText("The 'openai' library is required to reach the Jetstream2 inference service. Would you like to install it now?")
         msg.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
         if msg.exec_() == qt.QMessageBox.Ok:
             self.conversationView.append("<b>Installing 'openai' library...</b>")
@@ -1991,18 +1940,10 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def onSendPromptButtonClicked(self):
-        apiKey = self.apiKeyLineEdit.text.strip()
         userPrompt = self.promptTextEdit.toPlainText().strip()
 
         if not userPrompt:
             slicer.util.warningDisplay("Please enter a prompt.")
-            return
-
-        # Check if API key is needed based on selected model
-        selected_model = self.modelSelector.currentData
-        jetstream_models = ["DeepSeek-R1", "gpt-oss-120b", "llama-4-scout"]
-        if not apiKey and selected_model not in jetstream_models:
-            slicer.util.warningDisplay("Please enter your GitHub Personal Access Token for non-Jetstream2 models.")
             return
 
         self.logic.setDebugIterations(self.debugIterationsSpinBox.value)
@@ -2015,7 +1956,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                          f"<i>Thinking, please wait...</i><hr>")
             slicer.app.processEvents()
             try:
-                result = self.logic.processConversationalRequest(apiKey, userPrompt)
+                result = self.logic.processConversationalRequest(userPrompt)
                 if result['success']:
                     # Render response as HTML paragraphs
                     answer_html = result['response'].replace('\n', '<br>')
@@ -2074,7 +2015,7 @@ class DeveloperAgentWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         slicer.app.processEvents()
 
         try:
-            result = self.logic.processRequestToNode(apiKey, userPrompt, currentNode, outputPath, currentCode)
+            result = self.logic.processRequestToNode(userPrompt, currentNode, outputPath, currentCode)
 
             # ALWAYS update the editor to show generated code (even if execution failed)
             self.forceEditorUpdate(currentNode)
