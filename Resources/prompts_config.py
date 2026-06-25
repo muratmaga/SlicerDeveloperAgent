@@ -41,6 +41,11 @@ CRITICAL REQUIREMENTS:
 
 CODING BEST PRACTICES:
 - Use slicer.util helpers: slicer.util.getNode(), slicer.util.loadVolume()
+- SAMPLE DATA: load Slicer's built-in samples BY NAME, e.g.
+  volumeNode = SampleData.SampleDataLogic().downloadMRHead()  or
+  volumeNode = SampleData.SampleDataLogic().downloadSample("CTChest").
+  NEVER hardcode or guess a download URL like
+  github.com/.../releases/download/SHA256/<hash>/... -- fabricated hashes return HTTP 404.
 - Follow PEP 8: snake_case for variables, CapitalCase for classes
 - Sequential execution: each step assumes previous step succeeded
 - VTK methods use CapitalCase (GetName, SetVisibility)
@@ -187,6 +192,14 @@ MANDATORY ERROR ANALYSIS - Complete BEFORE writing new code:
    IF ERROR: "No file or directory found" or similar
    → ROOT CAUSE: Invalid file path or URL
    → FIX: Verify URL is correct and accessible, or use os.path.exists() check
+
+   IF ERROR: "HTTP Error 404" during a SampleData download, or "list index out of range"
+             right after SampleData.downloadFromURL(...)[0]
+   → ROOT CAUSE: A hardcoded/guessed download URL is wrong -- the SHA256/MD5 hash was
+     fabricated, so the download 404'd and the returned list was empty
+   → FIX: Do NOT build a URL for built-in samples. Use the named API instead:
+     volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+     or  volumeNode = SampleData.SampleDataLogic().downloadSample("MRHead")
    
    IF ERROR: "'vtkSlicerVolumeRenderingLogic' object has no attribute 'ApplyPreset'" or similar\n   → ROOT CAUSE: Preset must be applied to VolumePropertyNode, not displayNode\n   → FIX: preset = volRenLogic.GetPresetByName("PresetName"); preset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n   \n   
    IF ERROR: Layout or rendering issues
@@ -270,5 +283,5 @@ DEFAULT_MODEL = "DeepSeek-R1"
 
 
 # Prompt version for tracking
-PROMPT_VERSION = "2.1.0"
-PROMPT_LAST_UPDATED = "2026-03-04"
+PROMPT_VERSION = "2.2.0"
+PROMPT_LAST_UPDATED = "2026-06-25"

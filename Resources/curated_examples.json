@@ -1,44 +1,108 @@
 {
-  "version": "1.0",
-  "description": "Hand-curated Slicer code examples showing complete workflows",
+  "version": "1.1",
+  "description": "Hand-curated, source-verified Slicer code examples. Every snippet uses modern, non-deprecated APIs taken from the official Slicer script repository (Docs/developer_guide/script_repository) and verified against the Slicer source. These are injected as high-priority RAG context so the model copies proven patterns instead of inventing APIs or URLs.",
   "examples": [
     {
-      "heading": "Complete Threshold Segmentation Workflow",
-      "description": "Full workflow for segmenting a volume using threshold method in Segment Editor",
-      "keywords": ["segment", "threshold", "segmentation", "AddEmptySegment", "SetSelectedSegmentID", "segment editor"],
-      "code": "import slicer\n\nprint(\"Getting volume node...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating segmentation node...\")\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\n\nprint(\"Adding empty segment...\")\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Segment_1\")\n\nprint(\"Setting up Segment Editor...\")\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\n\nprint(\"Selecting segment...\")\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nprint(\"Applying threshold...\")\nsegmentEditorWidget.setActiveEffectByName(\"Threshold\")\neffect = segmentEditorWidget.activeEffect()\neffect.setParameter(\"MinimumThreshold\", \"30\")\neffect.setParameter(\"MaximumThreshold\", \"255\")\neffect.self().onApply()\n\nprint(\"Cleaning up...\")\nsegmentEditorWidget.setActiveEffect(None)\n\nprint(\"✅ Segmentation complete!\")",
+      "heading": "Download a Sample Volume by Name and Volume-Render It",
+      "description": "Download a built-in Slicer sample (e.g. MRHead) using the named SampleData API (NO hardcoded URL) and enable 3D volume rendering",
+      "keywords": ["load", "download", "sample", "MRHead", "CTChest", "SampleData", "downloadSample", "downloadMRHead", "volume", "volume rendering", "3D", "render", "preset"],
+      "code": "import slicer\nimport SampleData\n\n# Download a built-in sample volume BY NAME. Never hardcode or guess a download URL.\nvolumeNode = SampleData.SampleDataLogic().downloadMRHead()\n# For other samples use: SampleData.SampleDataLogic().downloadSample(\"CTChest\")\n\n# Enable 3D volume rendering and apply an MR preset.\nvolRenLogic = slicer.modules.volumerendering.logic()\ndisplayNode = volRenLogic.CreateDefaultVolumeRenderingNodes(volumeNode)\ndisplayNode.SetVisibility(True)\npreset = volRenLogic.GetPresetByName(\"MR-Default\")\npreset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n\n# Show the result in a 3D view.\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)\nslicer.util.resetThreeDViews()\nprint(\"MRHead volume rendering enabled\")",
       "source": "curated",
       "priority": 100
     },
     {
-      "heading": "Load Volume from URL with SampleData",
-      "description": "Download and load a volume from a URL using SampleData module",
-      "keywords": ["load", "download", "URL", "SampleData", "downloadFromURL", "volume"],
-      "code": "import slicer\nimport SampleData\n\nprint(\"Downloading volume from URL...\")\nurl = \"https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/...\"\nvolumeNode = SampleData.downloadFromURL(url)[0]\n\nprint(f\"Loaded: {volumeNode.GetName()}\")\n\nprint(\"Setting up 3D view...\")\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)\nslicer.util.resetThreeDViews()\n\nprint(\"✅ Complete!\")",
-      "source": "curated",
-      "priority": 100
-    },
-    {
-      "heading": "Paint Segmentation with Segment Editor",
-      "description": "Create segmentation and use Paint effect with Segment Editor",
-      "keywords": ["segment", "paint", "segmentation", "AddEmptySegment", "segment editor"],
-      "code": "import slicer\n\nprint(\"Getting volume...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating segmentation...\")\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\n\nprint(\"Adding segment...\")\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Painted_Region\")\n\nprint(\"Setting up Segment Editor...\")\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nprint(\"Ready for painting!\")\nsegmentEditorWidget.setActiveEffectByName(\"Paint\")\n\nprint(\"✅ Segment Editor ready!\")",
+      "heading": "Load a Volume from a File",
+      "description": "Load a volume (NRRD, NIfTI, DICOM series folder, etc.) from disk into the scene",
+      "keywords": ["load", "open", "volume", "loadVolume", "nrrd", "nifti", "file", "import"],
+      "code": "import slicer\n\n# loadVolume returns the loaded vtkMRMLScalarVolumeNode.\nvolumeNode = slicer.util.loadVolume(\"/path/to/volume.nrrd\")\nprint(\"Loaded volume:\", volumeNode.GetName())",
       "source": "curated",
       "priority": 95
     },
     {
-      "heading": "Volume Rendering Setup",
-      "description": "Set up volume rendering with preset for 3D visualization",
-      "keywords": ["render", "volume rendering", "3D", "visualization", "preset"],
-      "code": "import slicer\n\nprint(\"Getting volume...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating volume rendering...\")\nvolRenLogic = slicer.modules.volumerendering.logic()\ndisplayNode = volRenLogic.CreateDefaultVolumeRenderingNodes(volumeNode)\ndisplayNode.SetVisibility(True)\n\nprint(\"Applying CT-AAA preset...\")\npreset = volRenLogic.GetPresetByName(\"CT-AAA\")\npreset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n\nprint(\"Setting up 3D view...\")\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)\n\nprint(\"✅ Volume rendering active!\")",
+      "heading": "Access and Modify Volume Voxels as a NumPy Array",
+      "description": "Get voxels as a NumPy array, modify in place, and notify Slicer so the display refreshes",
+      "keywords": ["numpy", "array", "voxels", "arrayFromVolume", "arrayFromVolumeModified", "pixels", "intensity", "modify volume"],
+      "code": "import slicer\nimport SampleData\n\nvolumeNode = SampleData.SampleDataLogic().downloadMRHead()\n\n# arrayFromVolume returns a NumPy VIEW in KJI order (slice, row, column), not a copy.\nvoxels = slicer.util.arrayFromVolume(volumeNode)\nprint(\"Shape (k, j, i):\", voxels.shape, \"max:\", voxels.max())\n\n# Modify voxels in place, then notify Slicer so the display pipeline updates.\nvoxels[voxels < 50] = 0\nslicer.util.arrayFromVolumeModified(volumeNode)\nprint(\"Volume voxels updated\")",
+      "source": "curated",
+      "priority": 95
+    },
+    {
+      "heading": "Threshold Segmentation Workflow",
+      "description": "Segment a volume using the Threshold effect in Segment Editor",
+      "keywords": ["segment", "threshold", "segmentation", "AddEmptySegment", "setSourceVolumeNode", "segment editor", "qMRMLSegmentEditorWidget"],
+      "code": "import slicer\n\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Segment_1\")\n\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nsegmentEditorWidget.setActiveEffectByName(\"Threshold\")\neffect = segmentEditorWidget.activeEffect()\neffect.setParameter(\"MinimumThreshold\", \"30\")\neffect.setParameter(\"MaximumThreshold\", \"255\")\neffect.self().onApply()\nsegmentEditorWidget.setActiveEffect(None)\nprint(\"Threshold segmentation complete\")",
+      "source": "curated",
+      "priority": 100
+    },
+    {
+      "heading": "Grow from Seeds Segmentation",
+      "description": "Create a segmentation using the Grow from seeds effect in Segment Editor",
+      "keywords": ["segment", "grow from seeds", "segmentation", "AddEmptySegment", "segment editor"],
+      "code": "import slicer\n\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Region\")\n\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nsegmentEditorWidget.setActiveEffectByName(\"Grow from seeds\")\neffect = segmentEditorWidget.activeEffect()\neffect.self().onApply()\nprint(\"Grow from seeds segmentation complete\")",
+      "source": "curated",
+      "priority": 85
+    },
+    {
+      "heading": "Paint Segmentation with Segment Editor",
+      "description": "Create a segmentation and activate the Paint effect in Segment Editor",
+      "keywords": ["segment", "paint", "segmentation", "AddEmptySegment", "segment editor"],
+      "code": "import slicer\n\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Painted_Region\")\n\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nsegmentEditorWidget.setActiveEffectByName(\"Paint\")\nprint(\"Segment Editor ready for painting\")",
+      "source": "curated",
+      "priority": 85
+    },
+    {
+      "heading": "Export Segmentation to Model Nodes and Save as STL",
+      "description": "Export each segment to a surface model under a subject-hierarchy folder, then save the first model as an STL file",
+      "keywords": ["export", "segmentation", "model", "stl", "ExportAllSegmentsToModels", "surface", "mesh", "saveNode", "subject hierarchy"],
+      "code": "import slicer\nimport vtk\n\nsegmentationNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLSegmentationNode\")\n\n# Export every segment to a surface model node inside a subject-hierarchy folder.\nshNode = slicer.mrmlScene.GetSubjectHierarchyNode()\nexportFolderItemId = shNode.CreateFolderItem(shNode.GetSceneItemID(), \"Segments\")\nslicer.modules.segmentations.logic().ExportAllSegmentsToModels(segmentationNode, exportFolderItemId)\n\n# Save the first exported model as an STL file.\nsegmentModels = vtk.vtkCollection()\nshNode.GetDataNodesInBranch(exportFolderItemId, segmentModels)\nmodelNode = segmentModels.GetItemAsObject(0)\nslicer.util.saveNode(modelNode, \"/tmp/segment.stl\")\nprint(\"Exported segment to /tmp/segment.stl\")",
       "source": "curated",
       "priority": 90
     },
     {
-      "heading": "Grow from Seeds Segmentation",
-      "description": "Create segmentation using Grow from seeds method",
-      "keywords": ["segment", "grow from seeds", "segmentation", "AddEmptySegment"],
-      "code": "import slicer\n\nprint(\"Setting up...\")\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nprint(\"Creating segmentation...\")\nsegmentationNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentationNode\")\nsegmentationNode.CreateDefaultDisplayNodes()\nsegmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(volumeNode)\n\nprint(\"Adding segment...\")\nsegmentID = segmentationNode.GetSegmentation().AddEmptySegment(\"Region\")\n\nprint(\"Setting up Segment Editor...\")\nsegmentEditorWidget = slicer.qMRMLSegmentEditorWidget()\nsegmentEditorWidget.setMRMLScene(slicer.mrmlScene)\nsegmentEditorNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLSegmentEditorNode\")\nsegmentEditorWidget.setMRMLSegmentEditorNode(segmentEditorNode)\nsegmentEditorWidget.setSegmentationNode(segmentationNode)\nsegmentEditorWidget.setSourceVolumeNode(volumeNode)\nsegmentEditorWidget.setCurrentSegmentID(segmentID)\n\nprint(\"Applying Grow from seeds...\")\nsegmentEditorWidget.setActiveEffectByName(\"Grow from seeds\")\neffect = segmentEditorWidget.activeEffect()\neffect.self().onApply()\n\nprint(\"✅ Segmentation complete!\")",
+      "heading": "Load and Display a Surface Model",
+      "description": "Load a surface mesh (PLY, STL, OBJ, VTK) and set its display color and opacity",
+      "keywords": ["model", "mesh", "surface", "loadModel", "ply", "stl", "obj", "display", "color", "opacity"],
+      "code": "import slicer\n\nmodelNode = slicer.util.loadModel(\"/path/to/model.ply\")\ndisplayNode = modelNode.GetDisplayNode()\ndisplayNode.SetColor(1.0, 1.0, 0.0)  # yellow\ndisplayNode.SetOpacity(0.8)\nprint(\"Loaded model:\", modelNode.GetName())",
+      "source": "curated",
+      "priority": 90
+    },
+    {
+      "heading": "Place Fiducial Markups (Control Points)",
+      "description": "Create a fiducial point list node and add control points in RAS coordinates",
+      "keywords": ["markup", "markups", "fiducial", "landmark", "point", "control point", "AddControlPoint", "vtkMRMLMarkupsFiducialNode"],
+      "code": "import slicer\n\n# Create a fiducial (point list) node and add control points in RAS coordinates.\npointListNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLMarkupsFiducialNode\", \"F\")\npointListNode.AddControlPoint([0.0, 0.0, 0.0])\npointListNode.AddControlPoint([25.0, 10.0, -5.0])\nprint(\"Placed\", pointListNode.GetNumberOfControlPoints(), \"control points\")",
+      "source": "curated",
+      "priority": 90
+    },
+    {
+      "heading": "Apply a Linear Transform to a Node",
+      "description": "Build a linear transform from a 4x4 matrix, apply it to a node, and optionally harden it",
+      "keywords": ["transform", "linear", "matrix", "vtkMatrix4x4", "SetMatrixTransformToParent", "SetAndObserveTransformNodeID", "hardenTransform", "translate", "rotate"],
+      "code": "import slicer\nimport vtk\n\n# Build a transform that translates 50 mm along the R (left-right) axis.\ntransformNode = slicer.mrmlScene.AddNewNodeByClass(\"vtkMRMLTransformNode\")\nmatrix = vtk.vtkMatrix4x4()\nmatrix.SetElement(0, 3, 50.0)\ntransformNode.SetMatrixTransformToParent(matrix)\n\n# Apply it to a volume (or any transformable node).\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\nvolumeNode.SetAndObserveTransformNodeID(transformNode.GetID())\n\n# Optional: bake the transform into the data permanently.\nslicer.modules.transforms.logic().hardenTransform(volumeNode)\nprint(\"Transform applied and hardened\")",
+      "source": "curated",
+      "priority": 85
+    },
+    {
+      "heading": "Volume Rendering of an Already-Loaded Volume",
+      "description": "Turn on 3D volume rendering for a volume already in the scene and apply a CT preset",
+      "keywords": ["volume rendering", "3D", "render", "preset", "CreateDefaultVolumeRenderingNodes", "GetPresetByName", "CT-AAA"],
+      "code": "import slicer\n\nvolumeNode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\n\nvolRenLogic = slicer.modules.volumerendering.logic()\ndisplayNode = volRenLogic.CreateDefaultVolumeRenderingNodes(volumeNode)\ndisplayNode.SetVisibility(True)\npreset = volRenLogic.GetPresetByName(\"CT-AAA\")\npreset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)\nslicer.util.resetThreeDViews()\nprint(\"Volume rendering active\")",
+      "source": "curated",
+      "priority": 88
+    },
+    {
+      "heading": "Set the Layout and Reset the 3D View",
+      "description": "Switch the application layout and reset the 3D view camera",
+      "keywords": ["layout", "view", "3D view", "setLayout", "SlicerLayoutFourUpView", "resetThreeDViews", "layoutManager"],
+      "code": "import slicer\n\n# Layout constants live on slicer.vtkMRMLLayoutNode (e.g. SlicerLayoutFourUpView,\n# SlicerLayoutOneUp3DView, SlicerLayoutConventionalView).\nslicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutFourUpView)\nslicer.util.resetThreeDViews()\nprint(\"Layout set to four-up\")",
+      "source": "curated",
+      "priority": 80
+    },
+    {
+      "heading": "Save a Node to a File",
+      "description": "Save any storable node (volume, model, segmentation, markups) to disk",
+      "keywords": ["save", "export", "write", "saveNode", "nrrd", "stl", "file", "output"],
+      "code": "import slicer\n\nnode = slicer.mrmlScene.GetFirstNodeByClass(\"vtkMRMLScalarVolumeNode\")\nslicer.util.saveNode(node, \"/tmp/output.nrrd\")\nprint(\"Saved\", node.GetName(), \"to /tmp/output.nrrd\")",
       "source": "curated",
       "priority": 85
     }
