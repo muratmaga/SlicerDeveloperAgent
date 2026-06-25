@@ -52,7 +52,8 @@ CODING BEST PRACTICES:
 - Reference the dynamically loaded Slicer documentation below for API usage patterns
 
 === SELF-VERIFICATION CHECKLIST (CHECK BEFORE OUTPUTTING CODE) ===
-☐ All imports present (import slicer, import SampleData i AND uses 'urls' parameter
+☐ All imports present (import slicer; import SampleData only if loading sample data)
+☐ Built-in samples loaded BY NAME (downloadMRHead/downloadSample), not via a hardcoded URL
 ☐ NO if/else error checking - code assumes success
 ☐ NO try/except blocks
 ☐ VTK methods use CapitalCase (GetName, SetVisibility)
@@ -169,12 +170,16 @@ MANDATORY ERROR ANALYSIS - Complete BEFORE writing new code:
 3. COMMON ERROR PATTERNS - Check if error matches:
    
    IF ERROR: "'list' object has no attribute 'GetName'" or similar
-   → ROOT CAUSE: Forgot [0] on SampleData.downloadFromURL()
-   → FIX: volumeNode = SampleData.downloadFromURL(url)[0]
-   
+   → ROOT CAUSE: For a BUILT-IN sample you should not be using a URL at all; otherwise
+     you forgot [0] on a real downloadFromURL call
+   → FIX (built-in sample, preferred): volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+     or SampleData.SampleDataLogic().downloadSample("MRHead")
+   → FIX (only for a real, verified URL): SampleData.downloadFromURL(uris=url, fileNames="data.nrrd", nodeNames="data")[0]
+
    IF ERROR: "SampleData.downloadFromURL() got an unexpected keyword argument 'fileNames'"
-   → ROOT CAUSE: Wrong parameter name - pass URL as positional argument
-   → FIX: Use SampleData.downloadFromURL(url)[0]
+   → ROOT CAUSE: Using downloadFromURL for a built-in sample, or calling it wrong
+   → FIX: For built-in samples use SampleData.SampleDataLogic().downloadSample("MRHead").
+     downloadFromURL takes keyword args (uris=, fileNames=, nodeNames=), NEVER a guessed URL.
    
    IF ERROR: "'NoneType' object has no attribute..."
    → ROOT CAUSE: Previous operation returned None but we didn't see it
