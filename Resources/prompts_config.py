@@ -41,13 +41,19 @@ CRITICAL REQUIREMENTS:
 
 CODING BEST PRACTICES:
 - Use slicer.util helpers: slicer.util.getNode(), slicer.util.loadVolume()
+- SAMPLE DATA: load Slicer's built-in samples BY NAME, e.g.
+  volumeNode = SampleData.SampleDataLogic().downloadMRHead()  or
+  volumeNode = SampleData.SampleDataLogic().downloadSample("CTChest").
+  NEVER hardcode or guess a download URL like
+  github.com/.../releases/download/SHA256/<hash>/... -- fabricated hashes return HTTP 404.
 - Follow PEP 8: snake_case for variables, CapitalCase for classes
 - Sequential execution: each step assumes previous step succeeded
 - VTK methods use CapitalCase (GetName, SetVisibility)
 - Reference the dynamically loaded Slicer documentation below for API usage patterns
 
 === SELF-VERIFICATION CHECKLIST (CHECK BEFORE OUTPUTTING CODE) ===
-☐ All imports present (import slicer, import SampleData i AND uses 'urls' parameter
+☐ All imports present (import slicer; import SampleData only if loading sample data)
+☐ Built-in samples loaded BY NAME (downloadMRHead/downloadSample), not via a hardcoded URL
 ☐ NO if/else error checking - code assumes success
 ☐ NO try/except blocks
 ☐ VTK methods use CapitalCase (GetName, SetVisibility)
@@ -164,12 +170,16 @@ MANDATORY ERROR ANALYSIS - Complete BEFORE writing new code:
 3. COMMON ERROR PATTERNS - Check if error matches:
    
    IF ERROR: "'list' object has no attribute 'GetName'" or similar
-   → ROOT CAUSE: Forgot [0] on SampleData.downloadFromURL()
-   → FIX: volumeNode = SampleData.downloadFromURL(url)[0]
-   
+   → ROOT CAUSE: For a BUILT-IN sample you should not be using a URL at all; otherwise
+     you forgot [0] on a real downloadFromURL call
+   → FIX (built-in sample, preferred): volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+     or SampleData.SampleDataLogic().downloadSample("MRHead")
+   → FIX (only for a real, verified URL): SampleData.downloadFromURL(uris=url, fileNames="data.nrrd", nodeNames="data")[0]
+
    IF ERROR: "SampleData.downloadFromURL() got an unexpected keyword argument 'fileNames'"
-   → ROOT CAUSE: Wrong parameter name - pass URL as positional argument
-   → FIX: Use SampleData.downloadFromURL(url)[0]
+   → ROOT CAUSE: Using downloadFromURL for a built-in sample, or calling it wrong
+   → FIX: For built-in samples use SampleData.SampleDataLogic().downloadSample("MRHead").
+     downloadFromURL takes keyword args (uris=, fileNames=, nodeNames=), NEVER a guessed URL.
    
    IF ERROR: "'NoneType' object has no attribute..."
    → ROOT CAUSE: Previous operation returned None but we didn't see it
@@ -187,6 +197,14 @@ MANDATORY ERROR ANALYSIS - Complete BEFORE writing new code:
    IF ERROR: "No file or directory found" or similar
    → ROOT CAUSE: Invalid file path or URL
    → FIX: Verify URL is correct and accessible, or use os.path.exists() check
+
+   IF ERROR: "HTTP Error 404" during a SampleData download, or "list index out of range"
+             right after SampleData.downloadFromURL(...)[0]
+   → ROOT CAUSE: A hardcoded/guessed download URL is wrong -- the SHA256/MD5 hash was
+     fabricated, so the download 404'd and the returned list was empty
+   → FIX: Do NOT build a URL for built-in samples. Use the named API instead:
+     volumeNode = SampleData.SampleDataLogic().downloadMRHead()
+     or  volumeNode = SampleData.SampleDataLogic().downloadSample("MRHead")
    
    IF ERROR: "'vtkSlicerVolumeRenderingLogic' object has no attribute 'ApplyPreset'" or similar\n   → ROOT CAUSE: Preset must be applied to VolumePropertyNode, not displayNode\n   → FIX: preset = volRenLogic.GetPresetByName("PresetName"); preset.ApplyToVolumePropertyNode(displayNode.GetVolumePropertyNode())\n   \n   
    IF ERROR: Layout or rendering issues
@@ -270,5 +288,5 @@ DEFAULT_MODEL = "DeepSeek-R1"
 
 
 # Prompt version for tracking
-PROMPT_VERSION = "2.1.0"
-PROMPT_LAST_UPDATED = "2026-03-04"
+PROMPT_VERSION = "2.2.0"
+PROMPT_LAST_UPDATED = "2026-06-25"
